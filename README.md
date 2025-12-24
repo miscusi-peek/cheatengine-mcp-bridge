@@ -1,8 +1,8 @@
 # Cheat Engine MCP Bridge
 
-> **Let AI analyze game memory for you.** Connect Claude, Cursor, or Copilot directly to Cheat Engine.
+> **Let AI analyze the game memory for you.** Connect Claude, Cursor, or Copilot directly to Cheat Engine.
 
-[![Version](https://img.shields.io/badge/version-11.4.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org) [![Tests](https://img.shields.io/badge/tests-36%2F37%20passing-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/version-11.4.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org)
 
 ---
 
@@ -239,7 +239,7 @@ Total: 36/37 PASSED (100% success)
 
 ## The Bottom Line
 
-> **Stop clicking through hex dumps. Start having conversations with memory.**
+> **Stop clicking through hex dumps and start having conversations with the memory.**
 
 You no longer need to be an expert. Just ask the right questions.
 
