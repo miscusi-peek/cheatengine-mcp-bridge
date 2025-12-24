@@ -205,7 +205,7 @@ AI_Context/
 
 ## Testing
 
-Run the comprehensive test suite:
+Running the test:
 ```bash
 python MCP_Server/test_mcp.py
 ```
