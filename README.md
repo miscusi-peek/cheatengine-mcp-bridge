@@ -2,7 +2,7 @@
 
 # Cheat Engine MCP Bridge
 
-> **Let AI analyze the game memory for you.** Connect Claude, Cursor, or Copilot directly to Cheat Engine.
+> **Let multibillion $ AI datacenters analyze the game memory for you.** Connect Claude, Cursor, or Copilot directly to Cheat Engine to create mods, trainers, cheats and do anything you want with any program and game in a fraction of a time, as long as you have access to clean memory.
 
 [![Version](https://img.shields.io/badge/version-11.4.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org)
 
