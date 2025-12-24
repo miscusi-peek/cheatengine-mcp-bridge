@@ -33,12 +33,12 @@ You're staring at gigabytes of memory. Millions of addresses. Thousands of funct
 | Day 5: Game updates, start over | **Done.** |
 
 **Your AI can now:**
-- 🔍 Read any memory instantly (integers, floats, strings, pointers)
-- 🔗 Follow pointer chains: `[[base+0x10]+0x20]+0x8` → resolved in ms
-- 🧬 Auto-analyze structures with field types and values
-- 🏷️ Identify C++ objects via RTTI: *"This is a CPlayer object"*
-- 🔬 Disassemble and analyze functions
-- 🕵️ Debug invisibly with hardware breakpoints + Ring -1 hypervisor
+- Read any memory instantly (integers, floats, strings, pointers)
+- Follow pointer chains: `[[base+0x10]+0x20]+0x8` → resolved in ms
+- Auto-analyze structures with field types and values
+- Identify C++ objects via RTTI: *"This is a CPlayer object"*
+- Disassemble and analyze functions
+- Debug invisibly with hardware breakpoints + Ring -1 hypervisor
 
 ---
 
