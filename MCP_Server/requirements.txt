@@ -1,0 +1,8 @@
+# Cheat Engine MCP Bridge - Python Dependencies
+# Install: pip install -r requirements.txt
+
+# MCP SDK (Model Context Protocol) - Required for AI agent communication
+mcp>=1.0.0
+
+# Windows API bindings - Required for Named Pipe communication
+pywin32>=306
