@@ -4,7 +4,7 @@
 
 **Let multibillion $ AI datacenters analyze the program memory for you.**
 
-Connect Claude, Cursor, Copilot or your own AI agents directly to Cheat Engine to create mods, trainers, security audits or do anything else with any program/game in a fraction of a time.
+Connect Cursor, Copilot, Antigravity or your favorite local AI agent via RooCode/Cline directly to Cheat Engine to create mods, trainers, security audits or do anything else with any program/game in a fraction of a time.
 
 > **Stop clicking through hex dumps and start having conversations with the memory.**
 
