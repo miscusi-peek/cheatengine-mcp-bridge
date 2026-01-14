@@ -131,7 +131,7 @@ Use the `ping` tool to verify connectivity:
 
 ---
 
-## 39 MCP Tools Available
+## 43 MCP Tools Available
 
 ### Memory
 | Tool | Description |
