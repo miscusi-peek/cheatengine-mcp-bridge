@@ -321,6 +321,26 @@ def scan_all(value: str, type: str = "exact", protection: str = "+W-C") -> str:
 def get_scan_results(max: int = 100) -> str:
     """Get results from the last 'scan_all' operation. Use 'max' to limit output."""
     return format_result(ce_client.send_command("get_scan_results", {"max": max}))
+@mcp.tool()
+def next_scan(value: str, scan_type: str = "exact") -> str:
+    """Next scan to filter results. Types: exact, increased, decreased, changed, unchanged, bigger, smaller."""
+    return format_result(ce_client.send_command("next_scan", {"value": value, "scan_type": scan_type}))
+
+@mcp.tool()
+def write_integer(address: str, value: int, type: str = "dword") -> str:
+    """Write a number to memory. Types: byte, word, dword, qword, float, double."""
+    return format_result(ce_client.send_command("write_integer", {"address": address, "value": value, "type": type}))
+
+@mcp.tool()
+def write_memory(address: str, bytes: list[int]) -> str:
+    """Write raw bytes to memory."""
+    return format_result(ce_client.send_command("write_memory", {"address": address, "bytes": bytes}))
+
+@mcp.tool()
+def write_string(address: str, value: str, wide: bool = False) -> str:
+    """Write a string to memory (ASCII or Wide/UTF-16)."""
+    return format_result(ce_client.send_command("write_string", {"address": address, "value": value, "wide": wide}))
+
 
 @mcp.tool()
 def aob_scan(pattern: str, protection: str = "+X", limit: int = 100) -> str:

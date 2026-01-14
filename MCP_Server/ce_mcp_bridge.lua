@@ -682,6 +682,114 @@ local function cmd_get_scan_results(params)
 end
 
 -- ============================================================================
+-- COMMAND HANDLERS - NEXT SCAN & WRITE MEMORY (Added by MCP Enhancement)
+-- ============================================================================
+
+local function cmd_next_scan(params)
+    local value = params.value
+    local scanType = params.scan_type or "exact"
+    
+    if not serverState.scan_memscan then
+        return { success = false, error = "No previous scan. Run scan_all first." }
+    end
+    
+    local ms = serverState.scan_memscan
+    local scanOpt = soExactValue
+    
+    if scanType == "increased" then scanOpt = soIncreasedValue
+    elseif scanType == "decreased" then scanOpt = soDecreasedValue
+    elseif scanType == "changed" then scanOpt = soChanged
+    elseif scanType == "unchanged" then scanOpt = soUnchanged
+    elseif scanType == "bigger" then scanOpt = soBiggerThan
+    elseif scanType == "smaller" then scanOpt = soSmallerThan
+    end
+    
+    if scanOpt == soExactValue then
+        ms.nextScan(scanOpt, rtRounded, tostring(value), nil, false, false, false, false, false)
+    else
+        ms.nextScan(scanOpt, rtRounded, nil, nil, false, false, false, false, false)
+    end
+    ms.waitTillDone()
+    
+    if serverState.scan_foundlist then
+        serverState.scan_foundlist.destroy()
+    end
+    local fl = createFoundList(ms)
+    fl.initialize()
+    serverState.scan_foundlist = fl
+    
+    return { success = true, count = fl.getCount() }
+end
+
+local function cmd_write_integer(params)
+    local addr = params.address
+    local value = params.value
+    local vtype = params.type or "dword"
+    
+    if type(addr) == "string" then addr = getAddressSafe(addr) end
+    if not addr then return { success = false, error = "Invalid address" } end
+    
+    local ok, err
+    if vtype == "byte" then
+        ok, err = pcall(writeByte, addr, value)
+    elseif vtype == "word" or vtype == "2bytes" then
+        ok, err = pcall(writeSmallInteger, addr, value)
+    elseif vtype == "dword" or vtype == "4bytes" then
+        ok, err = pcall(writeInteger, addr, value)
+    elseif vtype == "qword" or vtype == "8bytes" then
+        ok, err = pcall(writeQword, addr, value)
+    elseif vtype == "float" then
+        ok, err = pcall(writeFloat, addr, value)
+    elseif vtype == "double" then
+        ok, err = pcall(writeDouble, addr, value)
+    else
+        return { success = false, error = "Unknown type: " .. tostring(vtype) }
+    end
+    
+    if not ok then
+        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+    end
+    
+    return { success = true, address = toHex(addr), value = value, type = vtype }
+end
+
+local function cmd_write_memory(params)
+    local addr = params.address
+    local bytes = params.bytes
+    
+    if type(addr) == "string" then addr = getAddressSafe(addr) end
+    if not addr then return { success = false, error = "Invalid address" } end
+    if not bytes or #bytes == 0 then return { success = false, error = "No bytes provided" } end
+    
+    local ok, err = pcall(writeBytes, addr, bytes)
+    
+    if not ok then
+        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+    end
+    
+    return { success = true, address = toHex(addr), bytes_written = #bytes }
+end
+
+local function cmd_write_string(params)
+    local addr = params.address
+    local str = params.value or params.string
+    local wide = params.wide or false
+    
+    if type(addr) == "string" then addr = getAddressSafe(addr) end
+    if not addr then return { success = false, error = "Invalid address" } end
+    if not str then return { success = false, error = "No string provided" } end
+    
+    local ok, err = pcall(writeString, addr, str, wide)
+    
+    if not ok then
+        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+    end
+    
+    return { success = true, address = toHex(addr), length = #str, wide = wide }
+end
+
+
+-- ============================================================================
 -- COMMAND HANDLERS - DISASSEMBLY & ANALYSIS
 -- ============================================================================
 
@@ -1967,6 +2075,10 @@ local commandHandlers = {
     aob_scan = cmd_aob_scan,
     pattern_scan = cmd_aob_scan,  -- Alias
     scan_all = cmd_scan_all,
+    next_scan = cmd_next_scan,
+    write_integer = cmd_write_integer,
+    write_memory = cmd_write_memory,
+    write_string = cmd_write_string,
     get_scan_results = cmd_get_scan_results,
     search_string = cmd_search_string,
     
