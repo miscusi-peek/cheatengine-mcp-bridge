@@ -4,7 +4,7 @@
 
 **Let multibillion $ AI datacenters analyze the program memory for you.**
 
-Connect Cursor, Copilot, Antigravity or your favorite local AI agent via RooCode/Cline directly to Cheat Engine to create mods, trainers, security audits or do anything else with any program/game in a fraction of a time.
+Create mods, trainers, security audits, game bots, accelerate RE, or do anything else with any program and game in a fraction of a time.
 
 [![Version](https://img.shields.io/badge/version-11.4.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org)
 
