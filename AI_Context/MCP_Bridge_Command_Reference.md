@@ -11,13 +11,14 @@
 1. [Basic & Utility](#1-basic--utility)
 2. [Process & Modules](#2-process--modules)
 3. [Memory Read](#3-memory-read)
-4. [Pattern Scanning](#4-pattern-scanning)
-5. [Disassembly & Analysis](#5-disassembly--analysis)
-6. [Breakpoints (Hardware Debug Registers)](#6-breakpoints-hardware-debug-registers)
-7. [Memory Regions](#7-memory-regions)
-8. [Lua Evaluation](#8-lua-evaluation)
-9. [High-Level Analysis Tools](#9-high-level-analysis-tools)
-10. [DBVM Hypervisor Tools (Ring -1)](#10-dbvm-hypervisor-tools-ring--1)
+4. [Memory Write](#4-memory-write)
+5. [Pattern Scanning](#5-pattern-scanning)
+6. [Disassembly & Analysis](#6-disassembly--analysis)
+7. [Breakpoints (Hardware Debug Registers)](#7-breakpoints-hardware-debug-registers)
+8. [Memory Regions](#8-memory-regions)
+9. [Lua Evaluation](#9-lua-evaluation)
+10. [High-Level Analysis Tools](#10-high-level-analysis-tools)
+11. [DBVM Hypervisor Tools (Ring -1)](#11-dbvm-hypervisor-tools-ring--1)
 
 ---
 
@@ -194,7 +195,80 @@
 
 ---
 
-## 4. Pattern Scanning
+## 4. Memory Write
+
+### `write_integer`
+**Purpose**: Write a numeric value to memory.
+
+**Parameters**:
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `address` | string/int | Yes | - | Memory address to write to |
+| `value` | int/float | Yes | - | Value to write |
+| `type` | string | No | "dword" | "byte", "word", "dword", "qword", "float", "double" |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "address": "0x12345678",
+  "value": 100,
+  "type": "dword"
+}
+```
+
+---
+
+### `write_memory`
+**Purpose**: Write raw bytes to memory.
+
+**Parameters**:
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `address` | string/int | Yes | Memory address to write to |
+| `bytes` | array | Yes | Array of byte values (0-255) |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "address": "0x12345678",
+  "bytes_written": 8
+}
+```
+
+**Example**:
+```json
+{"address": "0x12345678", "bytes": [0x90, 0x90, 0x90]}  // Write 3 NOP instructions
+```
+
+---
+
+### `write_string`
+**Purpose**: Write a string to memory.
+
+**Parameters**:
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `address` | string/int | Yes | - | Memory address to write to |
+| `value` | string | Yes | - | String to write |
+| `wide` | bool | No | false | Write as UTF-16 (widechar) |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "address": "0x12345678",
+  "length": 12,
+  "wide": false
+}
+```
+
+> **Caution**: Writing to memory can crash the target process. Ensure the address is writable and the data is valid.
+
+---
+
+## 5. Pattern Scanning
 
 ### `aob_scan` / `pattern_scan`
 **Purpose**: Scan memory for a byte pattern (Array of Bytes).
@@ -260,6 +334,35 @@
 
 ---
 
+### `next_scan`
+**Purpose**: Filter results from a previous scan (narrowing down addresses).
+
+**Parameters**:
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `value` | string | Yes | - | New value to scan for (used with "exact", "bigger", "smaller") |
+| `scan_type` | string | No | "exact" | "exact", "increased", "decreased", "changed", "unchanged", "bigger", "smaller" |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "count": 15
+}
+```
+
+**Workflow**:
+```
+1. scan_all(value="100")       → 50000 results
+2. next_scan(scan_type="decreased")  → 500 results (value went down)
+3. next_scan(value="95", scan_type="exact")  → 3 results
+4. get_scan_results()          → ["0x12345678", "0x23456789", "0x34567890"]
+```
+
+**Note**: Requires a previous `scan_all` to be executed first.
+
+---
+
 ### `search_string`
 **Purpose**: Search for a text string in memory.
 
@@ -282,7 +385,7 @@
 
 ---
 
-## 5. Disassembly & Analysis
+## 6. Disassembly & Analysis
 
 ### `disassemble`
 **Purpose**: Disassemble instructions starting from an address.
@@ -448,7 +551,7 @@
 
 ---
 
-## 6. Breakpoints (Hardware Debug Registers)
+## 7. Breakpoints (Hardware Debug Registers)
 
 > **Important**: All breakpoints use **hardware debug registers** (`bpmDebugRegister`) for anti-cheat safety. Maximum 4 breakpoints at a time (CPU limitation).
 
@@ -582,7 +685,7 @@
 
 ---
 
-## 7. Memory Regions
+## 8. Memory Regions
 
 ### `get_memory_regions`
 **Purpose**: Get memory regions using page protection sampling.
@@ -636,7 +739,7 @@
 
 ---
 
-## 8. Lua Evaluation
+## 9. Lua Evaluation
 
 ### `evaluate_lua`
 **Purpose**: Execute arbitrary Lua code in Cheat Engine's context.
@@ -664,7 +767,7 @@
 
 ---
 
-## 9. High-Level Analysis Tools
+## 10. High-Level Analysis Tools
 
 ### `dissect_structure`
 **Purpose**: Automatically analyze memory and guess data types.
@@ -850,7 +953,7 @@
 
 ---
 
-## 10. DBVM Hypervisor Tools (Ring -1)
+## 11. DBVM Hypervisor Tools (Ring -1)
 
 > **These tools require DBVM to be activated** (Edit → Settings → Debugger → Use DBVM). They operate at the hypervisor level (Ring -1), making them **100% invisible to anti-cheat software**.
 
