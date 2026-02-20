@@ -2274,7 +2274,7 @@ properties
   IsAddressGroupHeader: boolean - Set to true if the record was created as a Group Header with address.
   IsReadable: boolean - Set to false if record contains an unreadable address. NOTE: This property will not be set until the value property is accessed at least once. (ReadOnly)
   Selected: boolean
-  Options: String set - a string enclosed by square brackets filled with the options seperated by a comma. Valid options are: moHideChildren, moActivateChildrenAsWell, moDeactivateChildrenAsWell, moRecursiveSetValue, moAllowManualCollapseAndExpand, moManualExpandCollapse, moAlwaysHideChildren
+  Options: String set - a string enclosed by square brackets filled with the options separated by a comma. Valid options are: moHideChildren, moActivateChildrenAsWell, moDeactivateChildrenAsWell, moRecursiveSetValue, moAllowManualCollapseAndExpand, moManualExpandCollapse, moAlwaysHideChildren
   
   DropDownLinked: boolean - if dropdown list refers to list of another memory record eg. (memrec name)
   DropDownLinkedMemrec: string - Description of linked memrec or emptystring if not linked
@@ -3348,7 +3348,7 @@ openLuaServer(Name):
 
     integer CELUA_GetFunctionReferenceFromName(char *functionname): Returns a reference ID you can pass on to CELUA_ExecuteFunctionByReference
     UINT_PTR CELUA_ExecuteFunctionByReference(int refid, int paramcount, PVOID *parameters, BOOL async):
-      This functions executes the function specified by reference id. If async is true, the code will run in a seperate thread instead of the main thread
+      This functions executes the function specified by reference id. If async is true, the code will run in a separate thread instead of the main thread
       paramcount is the number of parameters to pass on to the function
       parameters is a pointer to a list of integers.  32-bit in 32-bit targets, 64-bit in 64-bit targets
 
@@ -4057,7 +4057,7 @@ properties
   Index: integer - The position of this column in the header
   Text: string - the text the column shows
   Visible: shortcut for coVisible in Options
-  Options: set(string):  a comma seperated list of the folowing options:
+  Options: set(string):  a comma separated list of the folowing options:
              coAllowClick           - Column can be clicked (must be enabled too).
              coDraggable            - Column can be dragged.
              coEnabled              - Column is enabled.
@@ -4090,7 +4090,7 @@ properties
   AutoResize: boolean - shortcut to access the hoAutoResize flag in Options
   MainColumn: integer - Column index to draw the treepart in.  (e.g: column0 is not visible)
   Columns: VirtualTreeColunmns  
-  Options: set(string) - Options is a comma seperated string which can be one of the following:
+  Options: set(string) - Options is a comma separated string which can be one of the following:
               hoAutoResize            - Adjust a column so that the header never exceeds the client width of the owner control.
               hoColumnResize          - Resizing columns with the mouse is allowed.
               hoDblClickResize        - Allows a column to resize itself to its largest entry.
@@ -4115,11 +4115,11 @@ methods
 
 StringTreeOptions class:
 properties
-    AnimationOptions: comma seperated string containing one or more of:
+    AnimationOptions: comma separated string containing one or more of:
            toAnimatedToggle           - Expanding and collapsing a node is animated (quick window scroll).
            toAdvancedAnimatedToggle   - Do some advanced animation effects when toggling a node.        
 
-    AutoOptions: comma seperated string containing one or more of: 
+    AutoOptions: comma separated string containing one or more of: 
            toAutoDropExpand           - Expand node if it is the drop target for more than a certain time.
            toAutoExpand               - Nodes are expanded (collapsed) when getting (losing) the focus.
            toAutoScroll               - Scroll if mouse is near the border while dragging or selecting.
@@ -4135,7 +4135,7 @@ properties
            toDisableAutoscrollOnEdit  - Do not center a node horizontally when it is edited.
            toAutoBidiColumnOrdering   - When set then columns (if any exist) will be reordered from lowest index to highest index and vice versa when the tree's bidi mode is changed.          
 
-    MiscOptions: comma seperated string containing one or more of:
+    MiscOptions: comma separated string containing one or more of:
            toAcceptOLEDrop            - Register tree as OLE accepting drop target
            toCheckSupport             - Show checkboxes/radio buttons.
            toEditable                 - Node captions can be edited.
@@ -4154,7 +4154,7 @@ properties
            toEditOnDblClick           - Editing mode can be entered with a double click
            toReverseFullExpandHotKey  - Used to define Ctrl+'+' instead of Ctrl+Shift+'+' for full expand (and similar for collapsing)  
 
-    PaintOptions: comma seperated string containing one or more of:
+    PaintOptions: comma separated string containing one or more of:
            toHideFocusRect            - Avoid drawing the dotted rectangle around the currently focused node.
            toHideSelection            - Selected nodes are drawn as unselected nodes if the tree is unfocused.
            toHotTrack                 - Track which node is under the mouse cursor.
@@ -4179,7 +4179,7 @@ properties
            toHideTreeLinesIfThemed    - Do not show tree lines if theming is used.
            toShowFilteredNodes        - Draw nodes even if they are filtered out.              
 
-    SelectionOptions: comma seperated string containing one or more of:
+    SelectionOptions: comma separated string containing one or more of:
            toDisableDrawSelection     - Prevent user from selecting with the selection rectangle in multiselect mode.
            toExtendedFocus            - Entries other than in the main column can be selected, edited etc.
            toFullRowSelect            - Hit test as well as selection highlight are not constrained to the text of a node.
@@ -4193,7 +4193,7 @@ properties
            toAlwaysSelectNode         - If this flag is set to true, the tree view tries to always have a node selected. This behavior is closer to the Windows TreeView and useful in Windows Explorer style applications.
            toRestoreSelection         - Set to true if upon refill the previously selected nodes should be selected again. The nodes will be identified by its caption only.     
 
-    StringOptions: comma seperated string containing one or more of:
+    StringOptions: comma separated string containing one or more of:
            toSaveCaptions             - If set then the caption is automatically saved with the tree node, regardless of what is saved in the user data.
            toShowStaticText           - Show static text in a caption which can be differently formatted than the caption but cannot be edited.
            toAutoAcceptEditChange     - Automatically accept changes during edit if the user finishes editing other then VK_RETURN or ESC. If not set then changes are cancelled.    
@@ -4211,7 +4211,7 @@ properties
   OnPaintText: function(sender, canvas, node, column, texttype) - called when the text is about to be painted. Use this to change the canvas font colors or do some background painting
   OnDrawText: function(sender, canvas, node, column, celltext, cellrect): defaultdraw - called when text is being painted. return true if you wish the normal painting to happen besides your own, false if you wish to do it all yourself
   OnFreeNode: function(sender, node) - Called when a node gets deleted
-  OnInitNode: function(sender, parentnode, node, initialStates) : initialStates - Called when a node gets created. Return the initialStates set (string) to set it's state. initialStates can be a comma seperated string containing one or more of:     ivsDisabled, ivsExpanded, ivsHasChildren, ivsMultiline, ivsSelected,ivsFiltered, ivsReInit 
+  OnInitNode: function(sender, parentnode, node, initialStates) : initialStates - Called when a node gets created. Return the initialStates set (string) to set it's state. initialStates can be a comma separated string containing one or more of:     ivsDisabled, ivsExpanded, ivsHasChildren, ivsMultiline, ivsSelected,ivsFiltered, ivsReInit 
   TreeOptions: StringTreeOptions 
   FullRowSelect: boolean - Shortcut to TreeOptions->SelectionOptions->toFullRowSelect
   FocusedNode: node - gets/sets the focused node
