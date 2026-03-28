@@ -128,6 +128,63 @@ local function captureStack(depth)
     return stack
 end
 
+-- Destroy scan objects safely to avoid leaking memscan/foundlist across runs.
+local function cleanupScanObjects()
+    local cleaned = { memscan = 0, foundlist = 0 }
+
+    if serverState.scan_foundlist then
+        pcall(function() serverState.scan_foundlist.destroy() end)
+        serverState.scan_foundlist = nil
+        cleaned.foundlist = 1
+    end
+
+    if serverState.scan_memscan then
+        pcall(function() serverState.scan_memscan.destroy() end)
+        serverState.scan_memscan = nil
+        cleaned.memscan = 1
+    end
+
+    return cleaned
+end
+
+-- Remove tracked breakpoint state by id and optionally detach CE breakpoint.
+local function clearTrackedBreakpointById(bpId, removeCeBreakpoint)
+    if not bpId then return false end
+
+    local bp = serverState.breakpoints[bpId]
+    if not bp then return false end
+
+    if removeCeBreakpoint and bp.address then
+        pcall(function() debug_removeBreakpoint(bp.address) end)
+    end
+
+    if bp.slot then
+        serverState.hw_bp_slots[bp.slot] = nil
+    end
+
+    serverState.breakpoints[bpId] = nil
+    serverState.breakpoint_hits[bpId] = nil
+    return true
+end
+
+-- Remove all tracked breakpoints that point to the same address.
+local function clearTrackedBreakpointsByAddress(addr, removeCeBreakpoint)
+    if not addr then return 0 end
+
+    local ids = {}
+    for id, bp in pairs(serverState.breakpoints) do
+        if bp.address == addr then
+            table.insert(ids, id)
+        end
+    end
+
+    for _, id in ipairs(ids) do
+        clearTrackedBreakpointById(id, removeCeBreakpoint)
+    end
+
+    return #ids
+end
+
 -- ============================================================================
 -- CLEANUP & SAFETY ROUTINES (CRITICAL FOR ROBUSTNESS)
 -- ============================================================================
@@ -158,15 +215,8 @@ local function cleanupZombieState()
     end
 
     -- 3. Cleanup Scan memory objects
-    if serverState.scan_memscan then
-        pcall(function() serverState.scan_memscan.destroy() end)
-        serverState.scan_memscan = nil
-        cleaned.scans = cleaned.scans + 1
-    end
-    if serverState.scan_foundlist then
-        pcall(function() serverState.scan_foundlist.destroy() end)
-        serverState.scan_foundlist = nil
-    end
+    local scanCleaned = cleanupScanObjects()
+    cleaned.scans = scanCleaned.memscan + scanCleaned.foundlist
 
     -- Reset all tracking tables
     serverState.breakpoints = {}
@@ -627,6 +677,9 @@ end
 local function cmd_scan_all(params)
     local value = params.value
     local vtype = params.type or "dword"
+
+    -- Ensure old scans are released before creating a new one.
+    cleanupScanObjects()
     
     local ms = createMemScan()
     local scanOpt = soExactValue
@@ -712,7 +765,8 @@ local function cmd_next_scan(params)
     ms.waitTillDone()
     
     if serverState.scan_foundlist then
-        serverState.scan_foundlist.destroy()
+        pcall(function() serverState.scan_foundlist.destroy() end)
+        serverState.scan_foundlist = nil
     end
     local fl = createFoundList(ms)
     fl.initialize()
@@ -1129,6 +1183,10 @@ local function cmd_set_breakpoint(params)
     if not addr then return { success = false, error = "Invalid address" } end
     
     bpId = bpId or tostring(addr)
+
+    -- Prevent slot leaks when replacing an existing breakpoint by id or address.
+    clearTrackedBreakpointsByAddress(addr, true)
+    clearTrackedBreakpointById(bpId, true)
     
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
@@ -1142,9 +1200,6 @@ local function cmd_set_breakpoint(params)
     if not slot then
         return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
     end
-    
-    -- Remove existing breakpoint at this address
-    pcall(function() debug_removeBreakpoint(addr) end)
     
     serverState.breakpoint_hits[bpId] = {}
     
@@ -1186,6 +1241,10 @@ local function cmd_set_data_breakpoint(params)
     if not addr then return { success = false, error = "Invalid address" } end
     
     bpId = bpId or tostring(addr)
+
+    -- Prevent slot leaks when replacing an existing breakpoint by id or address.
+    clearTrackedBreakpointsByAddress(addr, true)
+    clearTrackedBreakpointById(bpId, true)
     
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
@@ -1238,14 +1297,7 @@ local function cmd_remove_breakpoint(params)
     local bpId = params.id
     
     if bpId and serverState.breakpoints[bpId] then
-        local bp = serverState.breakpoints[bpId]
-        pcall(function() debug_removeBreakpoint(bp.address) end)
-        
-        if bp.slot then
-            serverState.hw_bp_slots[bp.slot] = nil
-        end
-        
-        serverState.breakpoints[bpId] = nil
+        clearTrackedBreakpointById(bpId, true)
         return { success = true, id = bpId }
     end
     
@@ -1288,14 +1340,18 @@ local function cmd_list_breakpoints(params)
 end
 
 local function cmd_clear_all_breakpoints(params)
-    local count = 0
-    for id, bp in pairs(serverState.breakpoints) do
-        pcall(function() debug_removeBreakpoint(bp.address) end)
-        count = count + 1
+    local ids = {}
+    for id, _ in pairs(serverState.breakpoints) do
+        table.insert(ids, id)
     end
-    serverState.breakpoints = {}
-    serverState.breakpoint_hits = {}
-    serverState.hw_bp_slots = {}
+
+    local count = 0
+    for _, id in ipairs(ids) do
+        if clearTrackedBreakpointById(id, true) then
+            count = count + 1
+        end
+    end
+
     return { success = true, removed = count }
 end
 
@@ -1305,6 +1361,7 @@ end
 
 local function cmd_evaluate_lua(params)
     local code = params.code
+    local serializeResult = params.serialize_result or false
     if not code then return { success = false, error = "No code provided" } end
     
     local fn, err = loadstring(code)
@@ -1313,7 +1370,22 @@ local function cmd_evaluate_lua(params)
     local ok, result = pcall(fn)
     if not ok then return { success = false, error = "Runtime error: " .. tostring(result) } end
     
-    return { success = true, result = tostring(result) }
+    local resultType = type(result)
+    if serializeResult then
+        return {
+            success = true,
+            result = result,
+            result_type = resultType,
+            serialized = true
+        }
+    end
+
+    return {
+        success = true,
+        result = result ~= nil and tostring(result) or nil,
+        result_type = resultType,
+        serialized = false
+    }
 end
 
 -- ============================================================================
@@ -1923,7 +1995,7 @@ end
 -- This is CRITICAL for continuous packet monitoring - logs can be polled repeatedly
 local function cmd_poll_dbvm_watch(params)
     local addr = params.address
-    local clear = params.clear or true  -- Default to clearing logs after poll
+    local clear = params.clear ~= false  -- Default true; explicit false is respected
     local max_results = params.max_results or 1000
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1979,6 +2051,7 @@ local function cmd_poll_dbvm_watch(params)
         virtual_address = toHex(addr),
         physical_address = toHex(watchInfo.physical),
         mode = watchInfo.mode,
+        clear_requested = clear,
         uptime_seconds = uptime,
         hit_count = #results,
         hits = results,
@@ -2191,9 +2264,12 @@ local function PipeWorker(thread)
         -- note: acceptConnection might not return a boolean, so we check pipe.Connected afterwards.
         
         -- log("Thread: Calling acceptConnection()...")
-        pcall(function()
+        local okAccept, acceptErr = pcall(function()
             pipe.acceptConnection()
         end)
+        if (not okAccept) and (not thread.Terminated) then
+            log("Thread: acceptConnection failed: " .. tostring(acceptErr))
+        end
         
         if pipe.Connected and not thread.Terminated then
             log("Client Connected")
@@ -2209,9 +2285,9 @@ local function PipeWorker(thread)
                     
                     -- Sanity check length
                     if len > 0 and len < 100 * 1024 * 1024 then
-                        local payload = pipe.readString(len)
+                        local okPayload, payload = pcall(function() return pipe.readString(len) end)
                         
-                        if payload then
+                        if okPayload and payload then
                             -- CRITICAL: EXECUTE ON MAIN THREAD
                             -- We pause the worker and run logic on GUI thread to be safe
                             local response = nil
@@ -2226,17 +2302,45 @@ local function PipeWorker(thread)
                                 local b2 = math.floor(rLen / 256) % 256
                                 local b3 = math.floor(rLen / 65536) % 256
                                 local b4 = math.floor(rLen / 16777216) % 256
-                                
-                                pipe.writeBytes({b1, b2, b3, b4})
-                                pipe.writeString(response)
+
+                                local okWriteHeader = pcall(function()
+                                    pipe.writeBytes({b1, b2, b3, b4})
+                                end)
+                                if not okWriteHeader then
+                                    if not thread.Terminated then
+                                        log("Thread: writeBytes failed, reconnecting client")
+                                    end
+                                    break
+                                end
+
+                                local okWriteBody = pcall(function()
+                                    pipe.writeString(response)
+                                end)
+                                if not okWriteBody then
+                                    if not thread.Terminated then
+                                        log("Thread: writeString failed, reconnecting client")
+                                    end
+                                    break
+                                end
                             end
                         else
-                             -- log("Thread: Read payload failed (nil)")
+                            if not thread.Terminated then
+                                log("Thread: readString failed, reconnecting client")
+                            end
+                            break
                         end
+                    else
+                        if not thread.Terminated then
+                            log("Thread: invalid payload length (" .. tostring(len) .. "), reconnecting client")
+                        end
+                        break
                     end
                 else
                     -- Read failed. If pipe disconnected, the loop will terminate on next check.
-                    if not pipe.Connected then
+                    if pipe.Connected and not thread.Terminated then
+                        log("Thread: readBytes failed while connected, reconnecting client")
+                        break
+                    elseif not pipe.Connected then
                         -- Client disconnected gracefully
                     end
                 end

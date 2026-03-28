@@ -19,9 +19,23 @@ import struct
 import json
 import time
 import sys
+import os
+import tempfile
+from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List, Callable
 
-PIPE_NAME = r"\\.\pipe\CE_MCP_Bridge_v99"
+DEFAULT_PIPE_NAME = "CE_MCP_Bridge_v99"
+
+
+def normalize_pipe_name(pipe_name: str | None) -> str:
+    raw_name = pipe_name or os.getenv("CE_MCP_PIPE_NAME") or DEFAULT_PIPE_NAME
+    if raw_name.startswith("\\\\.\\pipe\\"):
+        return raw_name
+    return rf"\\.\pipe\{raw_name}"
+
+
+PIPE_NAME = normalize_pipe_name(None)
+CONNECT_WAIT_MS = int(os.getenv("CE_MCP_CONNECT_WAIT_MS", "3000"))
 
 class TestResult:
     PASSED = "PASSED"
@@ -35,6 +49,7 @@ class MCPTestClient:
         
     def connect(self) -> bool:
         try:
+            win32pipe.WaitNamedPipe(PIPE_NAME, CONNECT_WAIT_MS)
             self.handle = win32file.CreateFile(
                 PIPE_NAME,
                 win32file.GENERIC_READ | win32file.GENERIC_WRITE,
@@ -72,7 +87,34 @@ class MCPTestClient:
     
     def close(self):
         if self.handle:
-            win32file.CloseHandle(self.handle)
+            try:
+                win32file.CloseHandle(self.handle)
+            finally:
+                self.handle = None
+
+
+class PythonToolClient:
+    """Invoke Python MCP helper functions directly for wrapper-level smoke tests."""
+
+    def __init__(self):
+        import mcp_cheatengine as python_server
+
+        self.python_server = python_server
+        self.tool_map = {
+            "evaluate_lua_file": python_server.evaluate_lua_file,
+            "auto_assemble_file": python_server.auto_assemble_file,
+        }
+
+    def send_command(self, method: str, params: Optional[dict] = None) -> dict:
+        if params is None:
+            params = {}
+
+        if method not in self.tool_map:
+            raise ValueError(f"Unsupported Python helper method: {method}")
+
+        result = self.tool_map[method](**params)
+        payload = json.loads(result) if isinstance(result, str) else result
+        return {"result": payload}
 
 
 # ============================================================================
@@ -379,9 +421,27 @@ def main():
                       f"Expected 'true' or 'false', got '{r.get('result')}'"),
         ]
     )
+
+    all_tests["evaluate_lua_structured"] = TestCase(
+        "Evaluate Lua (structured table)", "evaluate_lua",
+        params={"code": 'return { answer = 42, label = "ok" }', "serialize_result": True},
+        validators=[
+            has_field("success", bool),
+            field_equals("success", True),
+            has_field("result", dict),
+            has_field("result_type", str),
+            field_equals("result_type", "table"),
+            has_field("serialized", bool),
+            field_equals("serialized", True),
+            lambda r: (r.get("result", {}).get("answer") == 42,
+                      f"Expected result.answer=42, got {r.get('result')}"),
+            lambda r: (r.get("result", {}).get("label") == "ok",
+                      f"Expected result.label='ok', got {r.get('result')}"),
+        ]
+    )
     
     # Run Category 1
-    for test in ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit"]:
+    for test in ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit", "evaluate_lua_structured"]:
         all_tests[test].run(client)
     
     # Get arch info for later tests
@@ -404,6 +464,17 @@ def main():
             field_equals("success", True),
             has_field("count", int),
             field_in_range("count", 1, 100000000),  # At least 1 result expected
+        ]
+    )
+
+    all_tests["scan_all_default_type"] = TestCase(
+        "Scan All (default dword type)", "scan_all",
+        params={"value": 1},
+        validators=[
+            has_field("success", bool),
+            field_equals("success", True),
+            has_field("count", int),
+            field_in_range("count", 1, 100000000),
         ]
     )
     
@@ -440,7 +511,7 @@ def main():
     )
     
     # Run Category 2
-    for test in ["scan_all", "get_scan_results", "aob_scan", "search_string"]:
+    for test in ["scan_all", "scan_all_default_type", "get_scan_results", "aob_scan", "search_string"]:
         all_tests[test].run(client)
     
     # =========================================================================
@@ -763,6 +834,26 @@ def main():
             field_is_hex_address("final_address"),
         ]
     )
+
+    all_tests["read_pointer"] = TestCase(
+        "Read Pointer (simple dereference)", "read_pointer",
+        params={"address": hex(module_base)},
+        validators=[
+            has_field("success", bool),
+            field_equals("success", True),
+            has_field("base", str),
+            has_field("final_address", str),
+            has_field("path", list),
+            field_is_hex_address("base"),
+            field_is_hex_address("final_address"),
+            lambda r: (len(r.get("path", [])) == 1,
+                      f"Expected simple read_pointer path length 1, got {len(r.get('path', []))}"),
+            lambda r: (r.get("path", [None])[0] == r.get("base"),
+                      f"Expected path[0] to equal base, got {r.get('path')} vs {r.get('base')}"),
+            lambda r: (int(r.get("final_address", "0"), 16) == module_base,
+                      f"Expected final_address to stay at base {hex(module_base)}, got {r.get('final_address')}"),
+        ]
+    )
     
     all_tests["auto_assemble"] = TestCase(
         "Auto Assemble (safe alloc)", "auto_assemble",
@@ -812,7 +903,7 @@ def main():
     
     # Run Category 8
     for test in ["get_thread_list", "enum_memory_regions_full", "dissect_structure", 
-                 "read_pointer_chain", "auto_assemble", "get_rtti_classname", 
+                 "read_pointer", "read_pointer_chain", "auto_assemble", "get_rtti_classname", 
                  "get_address_info", "checksum_memory", "generate_signature"]:
         all_tests[test].run(client)
     
@@ -864,6 +955,19 @@ def main():
         )
         
         all_tests["start_dbvm_watch"].run(client)
+
+        all_tests["poll_dbvm_watch"] = TestCase(
+            "Poll DBVM Watch (clear=false)", "poll_dbvm_watch",
+            params={"address": dbvm_test_addr, "max_results": 1, "clear": False},
+            validators=[
+                has_field("success", bool),
+                has_field("clear_requested", bool),
+                field_equals("clear_requested", False),
+                has_field("hits", list),
+            ]
+        )
+
+        all_tests["poll_dbvm_watch"].run(client)
         
         # Always run stop to clean up, whether start succeeded or not
         all_tests["stop_dbvm_watch"] = TestCase(
@@ -885,6 +989,12 @@ def main():
             params={"address": hex(module_base), "mode": "w"},
             skip_reason="DBVM not loaded (get_physical_address failed)"
         )
+
+        all_tests["poll_dbvm_watch"] = TestCase(
+            "Poll DBVM Watch", "poll_dbvm_watch",
+            params={"address": hex(module_base), "max_results": 1, "clear": False},
+            skip_reason="DBVM not loaded (no active watch)"
+        )
         
         all_tests["stop_dbvm_watch"] = TestCase(
             "Stop DBVM Watch", "stop_dbvm_watch",
@@ -893,7 +1003,75 @@ def main():
         )
         
         all_tests["start_dbvm_watch"].run(client)
+        all_tests["poll_dbvm_watch"].run(client)
         all_tests["stop_dbvm_watch"].run(client)
+
+    client.close()
+
+    # =========================================================================
+    # CATEGORY 10: Python MCP Wrapper Helpers
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("CATEGORY 10: Python MCP Wrapper Helpers")
+    print("=" * 70)
+
+    python_tool_skip_reason = None
+    try:
+        python_tool_client = PythonToolClient()
+    except Exception as exc:
+        python_tool_client = None
+        python_tool_skip_reason = f"Could not import or initialize Python MCP wrapper: {exc}"
+
+    with tempfile.TemporaryDirectory(prefix="mcp_bridge_tests_") as temp_dir:
+        temp_path = Path(temp_dir)
+        lua_file = temp_path / "临时脚本.lua"
+        aa_file = temp_path / "临时补丁.cea"
+        lua_file.write_text('return { answer = 42, label = "ok" }\n', encoding="utf-8")
+        aa_file.write_text("globalalloc(mcp_test_region_file_v3,4)\n", encoding="utf-8")
+
+        all_tests["evaluate_lua_file"] = TestCase(
+            "Evaluate Lua File (UTF-8 + Chinese path)", "evaluate_lua_file",
+            params={"file_path": str(lua_file), "structured": True},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("result", dict),
+                has_field("serialized", bool),
+                field_equals("serialized", True),
+                has_field("source_file", str),
+                has_field("source_encoding", str),
+                has_field("source_length", int),
+                lambda r: (Path(r.get("source_file", "")).name == lua_file.name,
+                          f"Expected source_file to end with {lua_file.name}, got {r.get('source_file')}"),
+                lambda r: (r.get("result", {}).get("answer") == 42,
+                          f"Expected result.answer=42, got {r.get('result')}"),
+            ],
+            skip_reason=python_tool_skip_reason
+        )
+
+        all_tests["auto_assemble_file"] = TestCase(
+            "Auto Assemble File (UTF-8 + Chinese path)", "auto_assemble_file",
+            params={"file_path": str(aa_file)},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("executed", bool),
+                field_equals("executed", True),
+                has_field("source_file", str),
+                has_field("source_encoding", str),
+                has_field("source_length", int),
+                lambda r: (Path(r.get("source_file", "")).name == aa_file.name,
+                          f"Expected source_file to end with {aa_file.name}, got {r.get('source_file')}"),
+            ],
+            skip_reason=python_tool_skip_reason
+        )
+
+        if python_tool_client:
+            for test in ["evaluate_lua_file", "auto_assemble_file"]:
+                all_tests[test].run(python_tool_client)
+        else:
+            all_tests["evaluate_lua_file"].run(client)
+            all_tests["auto_assemble_file"].run(client)
     
     # =========================================================================
     # SUMMARY
@@ -908,16 +1086,17 @@ def main():
     total = len(all_tests)
     
     categories = {
-        "Basic & Utility": ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit"],
-        "Scanning": ["scan_all", "get_scan_results", "aob_scan", "search_string"],
+        "Basic & Utility": ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit", "evaluate_lua_structured"],
+        "Scanning": ["scan_all", "scan_all_default_type", "get_scan_results", "aob_scan", "search_string"],
         "Memory Reading": ["read_memory", "read_integer_byte", "read_integer_word", "read_integer_dword", "read_string"],
         "Disassembly": ["disassemble", "get_instruction_info", "find_function_boundaries", "analyze_function"],
         "References": ["find_references", "find_call_references"],
         "Breakpoints": ["list_breakpoints", "clear_all_breakpoints"],
         "Modules": ["enum_modules", "get_symbol_address", "get_memory_regions"],
-        "High-Level": ["get_thread_list", "enum_memory_regions_full", "dissect_structure", "read_pointer_chain", 
+        "High-Level": ["get_thread_list", "enum_memory_regions_full", "dissect_structure", "read_pointer", "read_pointer_chain", 
                       "auto_assemble", "get_rtti_classname", "get_address_info", "checksum_memory", "generate_signature"],
-        "DBVM": ["get_physical_address", "start_dbvm_watch", "stop_dbvm_watch"],
+        "DBVM": ["get_physical_address", "start_dbvm_watch", "poll_dbvm_watch", "stop_dbvm_watch"],
+        "Python Wrapper": ["evaluate_lua_file", "auto_assemble_file"],
     }
     
     for cat_name, tests in categories.items():

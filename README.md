@@ -116,6 +116,25 @@ Add to your MCP configuration (e.g., `mcp_config.json`):
 ```
 Restart the IDE to load the MCP server config.
 
+### Optional Environment Overrides
+If you run multiple bridge instances or need longer startup windows, the Python side now honors these environment variables:
+
+```powershell
+$env:CE_MCP_PIPE_NAME="CE_MCP_Bridge_v99"
+$env:CE_MCP_SERVER_NAME="cheatengine"
+$env:CE_MCP_TIMEOUT_MS="120000"
+$env:CE_MCP_CONNECT_WAIT_MS="3000"
+$env:CE_MCP_CONNECT_RETRIES="3"
+$env:CE_MCP_CONNECT_RETRY_DELAY_MS="250"
+```
+
+- `CE_MCP_PIPE_NAME`: short pipe name or full `\\.\pipe\...` path
+- `CE_MCP_SERVER_NAME`: override the FastMCP server name exposed to your IDE
+- `CE_MCP_TIMEOUT_MS`: response timeout for long CE operations
+- `CE_MCP_CONNECT_WAIT_MS`: how long the MCP server waits for the pipe to appear
+- `CE_MCP_CONNECT_RETRIES`: how many times the Python side retries pipe connection
+- `CE_MCP_CONNECT_RETRY_DELAY_MS`: delay between connection retries
+
 ### 3. Verify Connection
 Use the `ping` tool to verify connectivity:
 ```json
@@ -127,11 +146,25 @@ Use the `ping` tool to verify connectivity:
 "What process is attached?"
 "Read 16 bytes at the base address"
 "Disassemble the entry point"
+"Run my local Lua helper with evaluate_lua_file"
+"Apply my local AutoAssembler patch with auto_assemble_file"
 ```
+
+### 5. Run Local Files Through MCP
+You can now execute local script files directly from the Python MCP layer without copy-pasting them into chat:
+
+```text
+evaluate_lua_file(file_path="C:/path/to/helper.lua", structured=true)
+auto_assemble_file(file_path="C:/path/to/patch.cea")
+```
+
+- `evaluate_lua_file` auto-detects common encodings including UTF-8 and GB-family encodings
+- `auto_assemble_file` is useful for local `.CEA` / AutoAssembler payloads
+- Both tools return `source_file`, `source_encoding`, and `source_length` metadata for traceability
 
 ---
 
-## 43 MCP Tools Available
+## 45 MCP Tools Available
 
 ### Memory
 | Tool | Description |
@@ -152,7 +185,7 @@ Use the `ping` tool to verify connectivity:
 | Tool | Description |
 |------|-------------|
 | `set_breakpoint`, `set_data_breakpoint` | Hardware breakpoints |
-| `start_dbvm_watch` | Ring -1 invisible tracing |
+| `start_dbvm_watch`, `poll_dbvm_watch`, `stop_dbvm_watch` | Ring -1 invisible tracing |
 
 And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 
@@ -209,6 +242,12 @@ Running the test:
 ```bash
 python MCP_Server/test_mcp.py
 ```
+
+The suite now also covers:
+- `scan_all` default `dword` behavior
+- direct `read_pointer` semantics
+- structured Lua evaluation
+- Python helper tools such as `evaluate_lua_file` and `auto_assemble_file`
 
 Expected output:
 ```
