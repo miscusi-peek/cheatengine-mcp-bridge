@@ -489,6 +489,115 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-18 Cheat Table Records <<<
+
+@mcp.tool()
+def load_table(filename: str, merge: bool = False) -> str:
+    """Load a Cheat Engine table (.ct) file into the current session.
+
+    Args:
+        filename: Path to the .ct or .cetrainer file to load.
+        merge: If True, merge with the current table instead of replacing it.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("load_table", {"filename": filename, "merge": merge}))
+
+@mcp.tool()
+def save_table(filename: str, protect: bool = False) -> str:
+    """Save the current cheat table to a file.
+
+    Args:
+        filename: Destination path for the .ct or .cetrainer file.
+        protect: If True and the filename has a .cetrainer extension, protect it from normal reading.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("save_table", {"filename": filename, "protect": protect}))
+
+@mcp.tool()
+def get_address_list(offset: int = 0, limit: int = 100) -> str:
+    """List memory records in the current cheat table's address list.
+
+    Args:
+        offset: Zero-based index of the first record to return.
+        limit: Maximum number of records to return (default 100).
+
+    Returns JSON with: success, total, offset, limit, returned, records (list of
+    {id, description, address, type, value, offsets, enabled}).
+    """
+    return format_result(ce_client.send_command("get_address_list", {"offset": offset, "limit": limit}))
+
+@mcp.tool()
+def get_memory_record(id: int = None, description: str = None) -> str:
+    """Retrieve a single memory record by ID or description.
+
+    Args:
+        id: Unique numeric ID of the memory record.
+        description: Description string of the memory record (used when id is not provided).
+
+    Returns JSON with: success, record ({id, description, address, type, value, offsets, enabled}).
+    """
+    params = {}
+    if id is not None:
+        params["id"] = id
+    if description is not None:
+        params["description"] = description
+    return format_result(ce_client.send_command("get_memory_record", params))
+
+@mcp.tool()
+def create_memory_record(description: str, address: str, var_type: str = "dword") -> str:
+    """Create a new memory record in the cheat table address list.
+
+    Args:
+        description: Human-readable label for the new entry.
+        address: Address string (hex, symbol, or pointer expression) to watch.
+        var_type: Variable type — byte, word, dword, qword, float, double, string, bytearray (default: dword).
+
+    Returns JSON with: success, id, record ({id, description, address, type, value, offsets, enabled}).
+    """
+    return format_result(ce_client.send_command("create_memory_record", {
+        "description": description,
+        "address": address,
+        "type": var_type,
+    }))
+
+@mcp.tool()
+def delete_memory_record(id: int) -> str:
+    """Delete a memory record from the cheat table address list by ID.
+
+    Args:
+        id: Unique numeric ID of the memory record to delete.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("delete_memory_record", {"id": id}))
+
+@mcp.tool()
+def get_memory_record_value(id: int) -> str:
+    """Read the current value of a memory record as a string.
+
+    Args:
+        id: Unique numeric ID of the memory record.
+
+    Returns JSON with: success, value (string representation of the current value).
+    """
+    return format_result(ce_client.send_command("get_memory_record_value", {"id": id}))
+
+@mcp.tool()
+def set_memory_record_value(id: int, value: str) -> str:
+    """Write a value to a memory record (and therefore to the target process memory).
+
+    Args:
+        id: Unique numeric ID of the memory record to update.
+        value: New value as a string (e.g. "100", "3.14", "FF AA BB").
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("set_memory_record_value", {"id": id, "value": value}))
+
+# >>> END UNIT-18 <<<
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
