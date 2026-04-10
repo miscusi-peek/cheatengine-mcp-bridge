@@ -485,6 +485,117 @@ def auto_assemble(script: str) -> str:
     return format_result(ce_client.send_command("auto_assemble", {"script": script}))
 
 @mcp.tool()
+def assemble_instruction(
+    line: str,
+    address: str = None,
+    preference: int = 0,
+    skip_range_check: bool = False,
+) -> str:
+    """Assemble a single x86/x64 instruction into bytes.
+
+    Requires an attached process when an address is given (the address is used to
+    resolve relative operands such as JMP targets).
+
+    Returns {success, bytes: [int], size: int}.
+    preference: 0=none, 1=short, 2=long, 3=far.
+    """
+    params: dict = {"line": line, "preference": preference, "skip_range_check": skip_range_check}
+    if address is not None:
+        params["address"] = address
+    return format_result(ce_client.send_command("assemble_instruction", params))
+
+
+@mcp.tool()
+def auto_assemble_check(
+    script: str,
+    enable: bool = True,
+    target_self: bool = False,
+) -> str:
+    """Validate an Auto Assembler script for syntax errors without executing it.
+
+    Returns {success, valid: bool, errors: [str]}.
+    enable: True checks the [Enable] section; False checks [Disable].
+    target_self: if True, validates against CE's own process instead of the target.
+    """
+    return format_result(ce_client.send_command("auto_assemble_check", {
+        "script": script,
+        "enable": enable,
+        "target_self": target_self,
+    }))
+
+
+@mcp.tool()
+def compile_c_code(
+    source: str,
+    address: str = None,
+    target_self: bool = False,
+    kernelmode: bool = False,
+) -> str:
+    """Compile C source code using CE's built-in TCC compiler.
+
+    Does not require an attached process unless an address is provided.
+    Returns {success, symbols: {name: address}, errors: [str]}.
+    If TCC is unavailable: {success=false, error="TCC compiler not available",
+    error_code="CE_API_UNAVAILABLE"}.
+    """
+    params: dict = {"source": source, "target_self": target_self, "kernelmode": kernelmode}
+    if address is not None:
+        params["address"] = address
+    return format_result(ce_client.send_command("compile_c_code", params))
+
+
+@mcp.tool()
+def compile_cs_code(
+    source: str,
+    references: list = None,
+    core_assembly: str = None,
+) -> str:
+    """Compile C# source code using CE's .NET compiler (requires .NET 4+).
+
+    Returns {success, assembly_handle: str} where assembly_handle is the path to
+    the generated assembly. On .NET runtime absent:
+    {success=false, error_code="CE_API_UNAVAILABLE"}.
+    """
+    params: dict = {"source": source, "references": references or []}
+    if core_assembly is not None:
+        params["core_assembly"] = core_assembly
+    return format_result(ce_client.send_command("compile_cs_code", params))
+
+
+@mcp.tool()
+def generate_api_hook_script(
+    address: str,
+    target_address: str,
+    code_to_execute: str = "",
+) -> str:
+    """Generate an Auto Assembler script that hooks a function and redirects it.
+
+    Requires an attached process. address is the function to hook;
+    target_address is where execution should jump after the hook.
+    code_to_execute is optional extra AA code inserted into the generated script.
+    Returns {success, script: str}.
+    """
+    return format_result(ce_client.send_command("generate_api_hook_script", {
+        "address": address,
+        "target_address": target_address,
+        "code_to_execute": code_to_execute,
+    }))
+
+
+@mcp.tool()
+def generate_code_injection_script(address: str) -> str:
+    """Generate a boilerplate code-injection Auto Assembler script for an address.
+
+    Requires an attached process.
+    Returns {success, script: str} — the script can be used as a starting point
+    for patching code at that location.
+    """
+    return format_result(ce_client.send_command("generate_code_injection_script", {
+        "address": address,
+    }))
+
+
+@mcp.tool()
 def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
