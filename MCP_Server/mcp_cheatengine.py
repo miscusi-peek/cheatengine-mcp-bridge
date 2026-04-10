@@ -472,6 +472,145 @@ def poll_dbvm_watch(address: str, max_results: int = 1000) -> str:
         "max_results": max_results
     }))
 
+# --- KERNEL MODE / DBVM EXTENSIONS (Unit 21) ---
+
+@mcp.tool()
+def dbk_get_cr0() -> str:
+    """Read Control Register 0 (CR0) via the DBK kernel driver.
+
+    Requires the DBK kernel driver to be loaded (CE Settings -> Debugger -> Kernelmode).
+    Returns cr0 as a hex string.
+    """
+    return format_result(ce_client.send_command("dbk_get_cr0"))
+
+@mcp.tool()
+def dbk_get_cr3() -> str:
+    """Read Control Register 3 (CR3 — page-table base) via DBK or DBVM.
+
+    Works when either the DBK kernel driver or the DBVM hypervisor is loaded.
+    Returns cr3 as a hex string.
+    """
+    return format_result(ce_client.send_command("dbk_get_cr3"))
+
+@mcp.tool()
+def dbk_get_cr4() -> str:
+    """Read Control Register 4 (CR4) via the DBK kernel driver.
+
+    Requires the DBK kernel driver to be loaded (CE Settings -> Debugger -> Kernelmode).
+    Returns cr4 as a hex string.
+    """
+    return format_result(ce_client.send_command("dbk_get_cr4"))
+
+@mcp.tool()
+def read_process_memory_cr3(cr3: str, address: str, size: int) -> str:
+    """Read virtual memory using an explicit CR3 page-table base via DBK/DBVM.
+
+    Bypasses the standard OS memory-translation path, making it effective for
+    processes that hide memory from normal reads (e.g. anti-cheat analysis).
+
+    Requires: DBK kernel driver or DBVM hypervisor loaded; a process must be attached.
+
+    Args:
+        cr3: CR3 value (hex string or integer) identifying the target page table.
+        address: Virtual address to read from (hex string or symbol name).
+        size: Number of bytes to read.
+    """
+    return format_result(ce_client.send_command(
+        "read_process_memory_cr3",
+        {"cr3": cr3, "address": address, "size": size}
+    ))
+
+@mcp.tool()
+def write_process_memory_cr3(cr3: str, address: str, bytes: list) -> str:
+    """Write to virtual memory using an explicit CR3 page-table base via DBK/DBVM.
+
+    Bypasses the standard OS memory-translation path.
+
+    Requires: DBK kernel driver or DBVM hypervisor loaded; a process must be attached.
+
+    Args:
+        cr3: CR3 value (hex string or integer) identifying the target page table.
+        address: Virtual address to write to (hex string or symbol name).
+        bytes: List of integer byte values to write.
+    """
+    return format_result(ce_client.send_command(
+        "write_process_memory_cr3",
+        {"cr3": cr3, "address": address, "bytes": bytes}
+    ))
+
+@mcp.tool()
+def map_memory(address: str, size: int) -> str:
+    """Map a kernel/physical address range into the CE usermode context via DBK.
+
+    Returns a mapped_address that can be used for ordinary memory reads/writes.
+    Call unmap_memory() with the same mapped_address when finished.
+
+    Requires: DBK kernel driver loaded; a process must be attached.
+
+    Args:
+        address: Source address to map (hex string or symbol name).
+        size: Number of bytes to map.
+    """
+    return format_result(ce_client.send_command(
+        "map_memory",
+        {"address": address, "size": size}
+    ))
+
+@mcp.tool()
+def unmap_memory(mapped_address: str, size: int = 0) -> str:
+    """Release a memory mapping created by map_memory().
+
+    The size parameter is accepted for API compatibility but unused internally;
+    the MDL handle captured during map_memory() is used to release the mapping.
+
+    Requires: DBK kernel driver loaded; a process must be attached.
+
+    Args:
+        mapped_address: The mapped address returned by a prior map_memory() call.
+        size: Unused; kept for API symmetry with map_memory().
+    """
+    return format_result(ce_client.send_command(
+        "unmap_memory",
+        {"mapped_address": mapped_address, "size": size}
+    ))
+
+@mcp.tool()
+def dbk_writes_ignore_write_protection(enable: bool) -> str:
+    """Toggle whether DBK memory writes bypass copy-on-write (CoW) protection.
+
+    When enabled, writes go directly to the underlying physical page instead of
+    triggering a page fault and creating a process-private copy. Useful when
+    patching shared read-only pages across all processes simultaneously.
+
+    Requires: DBK kernel driver loaded.
+
+    Args:
+        enable: True to bypass CoW; False to restore normal CoW behaviour.
+    """
+    return format_result(ce_client.send_command(
+        "dbk_writes_ignore_write_protection",
+        {"enable": enable}
+    ))
+
+@mcp.tool()
+def get_physical_address_cr3(cr3: str, virtual_address: str) -> str:
+    """Translate a virtual address to its physical address using an explicit CR3.
+
+    Unlike get_physical_address (which uses the currently attached process's CR3),
+    this function lets you walk any process's page table — useful for cross-process
+    physical memory analysis.
+
+    Requires: DBK kernel driver or DBVM hypervisor loaded; a process must be attached.
+
+    Args:
+        cr3: CR3 value (hex string or integer) of the target process's page table.
+        virtual_address: Virtual address to translate (hex string or symbol name).
+    """
+    return format_result(ce_client.send_command(
+        "get_physical_address_cr3",
+        {"cr3": cr3, "virtual_address": virtual_address}
+    ))
+
 # --- SCRIPTING & CONTROL ---
 
 @mcp.tool()
