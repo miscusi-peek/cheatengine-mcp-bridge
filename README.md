@@ -6,7 +6,7 @@
 
 Create mods, trainers, security audits, game bots, accelerate RE, or do anything else with any program and game in a fraction of a time.
 
-[![Version](https://img.shields.io/badge/version-11.4.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org)
+[![Version](https://img.shields.io/badge/version-12.0.0-blue.svg)](#) [![Python](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://python.org)
 
 > [!NOTE]
 > Thanks everyone for the stars, much appreciated! <3
@@ -100,7 +100,7 @@ pip install mcp pywin32
 1. Enable DBVM in CheatEngine.
 2. File → Execute Script → Open ce_mcp_bridge.lua → Execute
 ```
-Look for: `[MCP v11.4.0] Server started on \\.\pipe\CE_MCP_Bridge_v99`
+Look for: `[MCP v12.0.0] Server started on \\.\pipe\CE_MCP_Bridge_v99`
 
 ### 2. Configure MCP Client
 Add to your MCP configuration (e.g., `mcp_config.json`):
@@ -119,7 +119,7 @@ Restart the IDE to load the MCP server config.
 ### 3. Verify Connection
 Use the `ping` tool to verify connectivity:
 ```json
-{"success": true, "version": "11.4.0", "message": "CE MCP Bridge Active"}
+{"success": true, "version": "12.0.0", "message": "CE MCP Bridge Active"}
 ```
 
 ### 4. Start Asking Questions
@@ -131,7 +131,7 @@ Use the `ping` tool to verify connectivity:
 
 ---
 
-## 43 MCP Tools Available
+## ~180 MCP Tools Available
 
 ### Memory
 | Tool | Description |
@@ -154,6 +154,62 @@ Use the `ping` tool to verify connectivity:
 | `set_breakpoint`, `set_data_breakpoint` | Hardware breakpoints |
 | `start_dbvm_watch` | Ring -1 invisible tracing |
 
+### Process Lifecycle
+| Tool | Description |
+|------|-------------|
+| `open_process`, `get_process_list` | Attach to or enumerate running processes |
+| `create_process` | Launch a new process under CE's control |
+| `pause_process`, `unpause_process` | Suspend / resume target execution |
+
+### Memory Allocation
+| Tool | Description |
+|------|-------------|
+| `allocate_memory`, `free_memory` | Reserve and release memory in the target |
+| `set_memory_protection`, `full_access` | Adjust page protection flags |
+
+### Code Injection
+| Tool | Description |
+|------|-------------|
+| `inject_dll` | Load a DLL into the target process |
+| `execute_code`, `execute_method` | Run shellcode or CE Lua methods remotely |
+
+### Symbol Management
+| Tool | Description |
+|------|-------------|
+| `register_symbol`, `get_symbol_info` | Create and query named symbols |
+| `enable_windows_symbols` | Enable PDB symbol resolution |
+
+### Assembly / Compilation
+| Tool | Description |
+|------|-------------|
+| `assemble_instruction` | Assemble a single x86/x64 instruction to bytes |
+| `compile_c_code` | Compile C source into injected shellcode |
+| `generate_api_hook_script` | Generate a CE auto-assembler API hook template |
+
+### Window / GUI Automation
+| Tool | Description |
+|------|-------------|
+| `find_window` | Locate a window by title or class |
+| `send_window_message` | Post `WM_*` messages to a target window |
+
+### Input Automation
+| Tool | Description |
+|------|-------------|
+| `get_pixel` | Sample a pixel color at screen coordinates |
+| `is_key_pressed`, `do_key_press` | Query and simulate keyboard input |
+
+### Cheat Table
+| Tool | Description |
+|------|-------------|
+| `load_table`, `save_table` | Load / save `.CT` cheat table files |
+| `get_address_list` | Enumerate entries in the active cheat table |
+
+### Kernel Mode (DBK / DBVM)
+| Tool | Description |
+|------|-------------|
+| `dbk_get_cr3` | Read the CR3 register for the target process |
+| `read_process_memory_cr3` | Read physical memory via CR3 bypass |
+
 And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 
 ---
@@ -165,6 +221,15 @@ And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 > **You MUST disable:** Cheat Engine → Settings → Extra → **"Query memory region routines"**
 > 
 > Enabled: Causes `CLOCK_WATCHDOG_TIMEOUT` BSODs due to conflicts with DBVM/Anti-Cheat when scanning protected pages.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. |
+| `CE_MCP_ALLOW_SHELL` | *unset* | Set to `1` to enable `run_command` / `shell_execute` tools. **Arbitrary code execution risk** — leave unset by default. |
 
 ---
 
@@ -190,14 +255,18 @@ AI: "0x00=vtable, 0x08=itemCount(int), 0x10=itemArray(ptr)..."
 ## Project Structure
 
 ```
+CLAUDE.md                               # Claude Code agent guidance (this repo)
+README.md                               # User-facing documentation
+
 MCP_Server/
-├── mcp_cheatengine.py      # Python MCP Server (FastMCP)
-├── ce_mcp_bridge.lua   # Cheat Engine Lua Bridge
-└── test_mcp.py # Test Suite
+├── mcp_cheatengine.py                  # Python MCP Server (FastMCP)
+├── ce_mcp_bridge.lua                   # Cheat Engine Lua Bridge
+└── test_mcp.py                         # Test Suite
 
 AI_Context/
-├── MCP_Bridge_Command_Reference.md   # MCP Commands reference
-├── CE_LUA_Documentation.md   # Full CheatEngine 7.6 official documentation
+├── BATCH_WORKER_BRIEFING.md            # Parallel-worker task specifications (v12 overhaul)
+├── MCP_Bridge_Command_Reference.md     # MCP Commands reference
+├── CE_LUA_Documentation.md             # Full CheatEngine 7.6 official documentation
 └── AI_Guide_MCP_Server_Implementation.md  # Full technical documentation for AI agent
 ```
 
