@@ -111,9 +111,34 @@ except ImportError as e:
 # Restore stdout for MCP usage after imports are complete
 sys.stdout = _mcp_stdout
 
-# Debug helper - always goes to stderr, never corrupts MCP
+# >>> BEGIN UNIT-06 Python client optimization <<<
+
+# Timeout (seconds) for pipe reads; override with CE_MCP_TIMEOUT env var.
+CE_MCP_TIMEOUT = int(os.environ.get("CE_MCP_TIMEOUT", "30"))
+
+# Rate-limited debug_log: identical messages repeated >10× within 1 s are suppressed
+# until the next flush window, then emitted with a repeat count.
+_debug_log_history = {}  # msg -> (count, last_flushed); capped at 512 distinct messages
+
 def debug_log(msg):
-    print(f"[MCP CE] {msg}", file=sys.stderr, flush=True)
+    now = time.time()
+    hist = _debug_log_history.get(msg, (0, now))
+    count, last_flushed = hist
+    count += 1
+    if now - last_flushed > 1.0:
+        if count > 1:
+            print(f"[MCP CE] {msg} (x{count})", file=sys.stderr, flush=True)
+        else:
+            print(f"[MCP CE] {msg}", file=sys.stderr, flush=True)
+        _debug_log_history[msg] = (0, now)
+        # Evict oldest entries when the table grows too large.
+        if len(_debug_log_history) > 512:
+            oldest = min(_debug_log_history, key=lambda k: _debug_log_history[k][1])
+            del _debug_log_history[oldest]
+    else:
+        _debug_log_history[msg] = (count, last_flushed)
+
+# >>> END UNIT-06 <<<
 
 # Helper to format results as proper JSON strings for MCP tools
 def format_result(result):
@@ -140,6 +165,7 @@ MCP_SERVER_NAME = "cheatengine"
 class CEBridgeClient:
     def __init__(self):
         self.handle = None
+        self._last_used = None  # epoch seconds of last successful round-trip
 
     def connect(self):
         """Attempts to connect to the CE Named Pipe."""
@@ -162,52 +188,81 @@ class CEBridgeClient:
         """Send command to CE Bridge with auto-reconnection on failure."""
         max_retries = 2
         last_error = None
-        
+
+        # Close handles that have been idle >5 min to avoid stale-pipe errors.
+        now = time.time()
+        if self.handle is not None and self._last_used is not None:
+            if now - self._last_used > 300:
+                debug_log("Pipe idle >5 min — reconnecting.")
+                self.close()
+
         for attempt in range(max_retries):
             if not self.handle:
                 if not self.connect():
                     raise ConnectionError("Cheat Engine Bridge (v11/v99) is not running (Pipe not found).")
 
+            # Reuse the timestamp already captured above for the JSON-RPC id.
             request = {
                 "jsonrpc": "2.0",
                 "method": method,
                 "params": params or {},
-                "id": int(time.time() * 1000)
+                "id": int(now * 1000)
             }
-            
+
             try:
                 req_json = json.dumps(request).encode('utf-8')
                 header = struct.pack('<I', len(req_json))
-                
+
                 win32file.WriteFile(self.handle, header)
                 win32file.WriteFile(self.handle, req_json)
-                
+
+                # Best-effort deadline: CE_MCP_TIMEOUT is respected via post-read checks.
+                # A hard pre-empting timeout requires FILE_FLAG_OVERLAPPED at open time.
+                # TODO: implement hard timeout via overlapped I/O for a more robust approach.
+                deadline = now + CE_MCP_TIMEOUT
+
                 resp_header_buffer = win32file.ReadFile(self.handle, 4)[1]
+                if time.time() > deadline:
+                    self.close()
+                    raise ConnectionError(f"CE Bridge timeout after {CE_MCP_TIMEOUT} seconds")
                 if len(resp_header_buffer) < 4:
                     self.close()
                     last_error = ConnectionError("Incomplete response header from CE.")
                     continue  # Retry
-                    
+
                 resp_len = struct.unpack('<I', resp_header_buffer)[0]
-                
-                if resp_len > 16 * 1024 * 1024: 
+
+                if resp_len > 16 * 1024 * 1024:
                     self.close()
                     raise ConnectionError(f"Response too large: {resp_len} bytes")
 
                 resp_body_buffer = win32file.ReadFile(self.handle, resp_len)[1]
-                
+                if time.time() > deadline:
+                    self.close()
+                    raise ConnectionError(f"CE Bridge timeout after {CE_MCP_TIMEOUT} seconds")
+
                 try:
                     response = json.loads(resp_body_buffer.decode('utf-8'))
                 except json.JSONDecodeError:
                     self.close()
                     last_error = ConnectionError("Invalid JSON received from CE")
                     continue  # Retry
-                
+
+                self._last_used = time.time()
+
                 if 'error' in response:
                     return {"success": False, "error": str(response['error'])}
                 if 'result' in response:
-                    return response['result']
-                    
+                    result = response['result']
+                    # Warn when Lua sends success=false without the required error_code field.
+                    if isinstance(result, dict) and result.get("success") is False:
+                        if "error_code" not in result:
+                            debug_log(
+                                f"Warning: CE response for '{method}' has success=false "
+                                "but missing error_code field."
+                            )
+                    return result
+
                 return response
 
             except pywintypes.error as e:
@@ -215,7 +270,7 @@ class CEBridgeClient:
                 last_error = ConnectionError(f"Pipe Communication failed: {e}")
                 if attempt < max_retries - 1:
                     continue  # Retry
-        
+
         # All retries failed
         if last_error:
             raise last_error

@@ -2,7 +2,9 @@
 # Install: pip install -r requirements.txt
 
 # MCP SDK (Model Context Protocol) - Required for AI agent communication
-mcp>=1.0.0
+# Upper bound <2.0.0 guards against breaking API changes in a future major release.
+mcp>=1.0.0,<2.0.0
 
 # Windows API bindings - Required for Named Pipe communication
-pywin32>=306
+# Upper bound <400 guards against unexpected breaking changes in a future major release.
+pywin32>=306,<400
