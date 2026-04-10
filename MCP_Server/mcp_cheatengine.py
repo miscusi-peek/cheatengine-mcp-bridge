@@ -489,6 +489,38 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- DEBUG OUTPUT & MULTIMEDIA (Unit 23) ---
+
+@mcp.tool()
+def output_debug_string(message: str) -> str:
+    """Post a message to the Windows debugger via OutputDebugString (readable with tools like DebugView)."""
+    return format_result(ce_client.send_command("output_debug_string", {"message": message}))
+
+@mcp.tool()
+def speak_text(text: str, english_only: bool = False) -> str:
+    """Speak text via Windows SAPI text-to-speech. Set english_only=True to force the English voice."""
+    return format_result(ce_client.send_command("speak_text", {"text": text, "english_only": english_only}))
+
+@mcp.tool()
+def play_sound(filename: str) -> str:
+    """Play a WAV sound file by filename. Path must not contain '..' directory traversal."""
+    return format_result(ce_client.send_command("play_sound", {"filename": filename}))
+
+@mcp.tool()
+def beep() -> str:
+    """Play a simple system beep sound."""
+    return format_result(ce_client.send_command("beep", {}))
+
+@mcp.tool()
+def set_progress_state(state: str) -> str:
+    """Set the Cheat Engine taskbar progress state. Valid states: none, normal, paused, error, indeterminate."""
+    return format_result(ce_client.send_command("set_progress_state", {"state": state}))
+
+@mcp.tool()
+def set_progress_value(current: int, max: int) -> str:
+    """Set the Cheat Engine taskbar progress bar position. Provide current value and maximum value."""
+    return format_result(ce_client.send_command("set_progress_value", {"current": current, "max": max}))
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
