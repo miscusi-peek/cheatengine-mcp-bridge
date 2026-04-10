@@ -489,6 +489,107 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-08 Memory Allocation <<<
+
+@mcp.tool()
+def allocate_memory(size: int, base_address: str = None, protection: str = "rwx") -> str:
+    """Allocate memory in the target process.
+
+    Args:
+        size: Number of bytes to allocate.
+        base_address: Preferred base address as hex string (e.g. "0x140000000"). Optional.
+        protection: Access flags — "r" (read-only), "rw" (read-write),
+                    "rx" (read-execute), "rwx" (read-write-execute, default).
+
+    Returns JSON with: success, address.
+    """
+    params = {"size": size, "protection": protection}
+    if base_address is not None:
+        params["base_address"] = base_address
+    return format_result(ce_client.send_command("allocate_memory", params))
+
+@mcp.tool()
+def free_memory(address: str, size: int = 0) -> str:
+    """Free memory previously allocated in the target process.
+
+    Args:
+        address: Address of the region to free as hex string.
+        size: Size of the region in bytes. Use 0 to let the OS determine it (default).
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("free_memory", {"address": address, "size": size}))
+
+@mcp.tool()
+def allocate_shared_memory(name: str, size: int) -> str:
+    """Create and map a shared memory region in the target process.
+
+    The region is allocated with non-executable protection by default.
+
+    Args:
+        name: Unique name for the shared memory object.
+        size: Size in bytes. Defaults to 4096 if the region does not yet exist.
+
+    Returns JSON with: success, address.
+    """
+    return format_result(ce_client.send_command("allocate_shared_memory", {"name": name, "size": size}))
+
+@mcp.tool()
+def get_memory_protection(address: str) -> str:
+    """Query the protection flags of a memory page in the target process.
+
+    Args:
+        address: Address to query as hex string.
+
+    Returns JSON with: success, read (bool), write (bool), execute (bool), raw (PAGE_* name).
+    """
+    return format_result(ce_client.send_command("get_memory_protection", {"address": address}))
+
+@mcp.tool()
+def set_memory_protection(address: str, size: int, read: bool = True, write: bool = True, execute: bool = True) -> str:
+    """Change the protection flags of a memory region in the target process.
+
+    Args:
+        address: Start address as hex string.
+        size: Size in bytes of the region to protect.
+        read: Allow read access (default True).
+        write: Allow write access (default True).
+        execute: Allow execute access (default True).
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("set_memory_protection", {
+        "address": address, "size": size, "read": read, "write": write, "execute": execute
+    }))
+
+@mcp.tool()
+def full_access(address: str, size: int) -> str:
+    """Grant full read-write-execute access to a memory region (convenience wrapper).
+
+    Args:
+        address: Start address as hex string.
+        size: Size in bytes of the region.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("full_access", {"address": address, "size": size}))
+
+@mcp.tool()
+def allocate_kernel_memory(size: int) -> str:
+    """Allocate non-paged kernel memory via the DBK driver.
+
+    Requires the Cheat Engine kernel driver (DBK) to be loaded.
+
+    Args:
+        size: Number of bytes to allocate.
+
+    Returns JSON with: success, address.
+    Error codes: DBK_NOT_LOADED if the kernel driver is not active.
+    """
+    return format_result(ce_client.send_command("allocate_kernel_memory", {"size": size}))
+
+# >>> END UNIT-08 <<<
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
