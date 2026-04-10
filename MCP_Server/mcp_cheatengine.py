@@ -489,6 +489,55 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-20a File IO Clipboard <<<
+
+@mcp.tool()
+def file_exists(filename: str) -> str:
+    """Check whether a file exists at the given path. Returns {success, exists: bool}."""
+    return format_result(ce_client.send_command("file_exists", {"filename": filename}))
+
+@mcp.tool()
+def delete_file(filename: str) -> str:
+    """Delete a file at the given path. Returns {success}.
+
+    WARNING: This is a destructive operation. The file will be permanently deleted
+    from disk. Path traversal sequences ('..') are blocked by the bridge. Use with
+    extreme caution — there is no undo.
+    """
+    return format_result(ce_client.send_command("delete_file", {"filename": filename}))
+
+@mcp.tool()
+def get_file_list(path: str) -> str:
+    """List files in the given directory path. Returns {success, count, files: [str]}."""
+    return format_result(ce_client.send_command("get_file_list", {"path": path}))
+
+@mcp.tool()
+def get_directory_list(path: str) -> str:
+    """List subdirectories in the given directory path. Returns {success, count, directories: [str]}."""
+    return format_result(ce_client.send_command("get_directory_list", {"path": path}))
+
+@mcp.tool()
+def get_temp_folder() -> str:
+    """Return the path to the system temp folder. Returns {success, path: str}."""
+    return format_result(ce_client.send_command("get_temp_folder"))
+
+@mcp.tool()
+def get_file_version(filename: str) -> str:
+    """Get the version info of a file (major, minor, release, build). Returns {success, major, minor, release, build, version_string}."""
+    return format_result(ce_client.send_command("get_file_version", {"filename": filename}))
+
+@mcp.tool()
+def read_clipboard() -> str:
+    """Read text from the system clipboard. Returns {success, text: str}."""
+    return format_result(ce_client.send_command("read_clipboard"))
+
+@mcp.tool()
+def write_clipboard(text: str) -> str:
+    """Write text to the system clipboard. Returns {success}."""
+    return format_result(ce_client.send_command("write_clipboard", {"text": text}))
+
+# >>> END UNIT-20a <<<
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
