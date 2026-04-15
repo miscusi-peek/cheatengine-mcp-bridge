@@ -6,6 +6,7 @@ from enum import Enum
 from .analyzer import AOBResult, analyze_aob
 from .parser import AOBEntry, parse_pattern, pattern_to_str
 from .history_store.store import HistoryStore
+from .hook_intent_classifier.classifier import classify_instruction_window
 from .method_diff.service import diff_instruction_windows
 from .preprocess.models import HookPreprocessResult
 from .preprocess.matcher import preprocess_entry
@@ -49,6 +50,9 @@ def _to_candidate_input(candidate) -> CandidateInput:
         candidate.actual_bytes,
     ) if candidate.actual_bytes else None
 
+    raw_instructions = [item.raw for item in candidate.instructions]
+    intent = classify_instruction_window(raw_instructions) if raw_instructions else None
+
     return CandidateInput(
         offset=candidate.offset,
         address=candidate.address,
@@ -66,6 +70,7 @@ def _to_candidate_input(candidate) -> CandidateInput:
         uniqueness_classification=uniqueness_classification,
         uniqueness_match_count=uniqueness_match_count,
         stability_score=stability.stability_score if stability else 0.0,
+        intent_label=intent.label if intent else "",
         instructions=[
             {
                 "address": hex(item.address),

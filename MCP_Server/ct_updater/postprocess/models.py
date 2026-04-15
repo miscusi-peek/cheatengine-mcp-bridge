@@ -29,6 +29,7 @@ class CandidateInput:
     uniqueness_classification: str = ""
     uniqueness_match_count: int = 0
     stability_score: float = 0.0
+    intent_label: str = ""
 
 
 @dataclass

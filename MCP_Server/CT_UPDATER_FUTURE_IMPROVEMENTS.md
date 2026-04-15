@@ -30,81 +30,29 @@ the pipeline should increasingly give it:
 
 ## Best Next Additions
 
-### 1. Method-Diff Integration
+### 1. Method-Diff Integration ✅ Done
 
-`method_diff` already exists, but it is still mostly a side tool.
+`method_diff/` is implemented and wired into workflow, postprocess decision artifacts, and feature builder packets. Escalated entries automatically include a normalized instruction diff between old and new candidate windows.
 
-Best next step:
+### 2. Patch Preview Scoring ✅ Done
 
-- automatically include method-diff output in escalated artifacts
-- compare the old known-good window against the top candidate window
-- summarize changes such as:
-  - same store pattern
-  - branch shape changed
-  - constant drifted
-  - extra guard inserted
-  - call site moved
+`--preview-only` now includes a `Preview Scoring` section with risk label (`low`/`medium`/`high`), flow bucket, confidence score, and reason codes per fixable entry.
 
-Why it helps:
+### 3. Constraint-Based Candidate Rejection ✅ Done (heuristic form)
 
-- AIs review semantic deltas much faster than raw disassembly.
+`hook_intent_classifier/` classifies each candidate's instruction window as `write`, `read`, `read_modify_write`, `branch_gate`, `callsite`, `compare`, or `mixed`. The postprocess rescorer computes a majority intent across all candidates and penalizes outliers. When top two candidates disagree, `intent_conflict_with_backup` is added to the decision flags.
 
-### 2. Patch Preview Scoring
-
-The current preview shows what would change. It could also explain how risky the patch is.
-
-Add:
-
-- patch risk level
-- confidence breakdown
-- uniqueness verdict
-- history alignment verdict
-- reasons the patch is considered safe or risky
-
-Why it helps:
-
-- the AI no longer has to infer trustworthiness from multiple reports
-
-### 3. Constraint-Based Candidate Rejection
-
-A lot of bad candidates can be rejected before scoring if the updater knows what kind of hook it is looking for.
-
-Examples:
-
-- this hook must be a write, not a read
-- this hook must involve a float op
-- this hook must sit after a compare and branch
-- this hook must write to memory, not just move between registers
-
-Why it helps:
-
-- the AI spends less time considering impossible matches
+Not yet done: authored per-hook intent constraints stored in the CT schema. The current form is fully heuristic.
 
 ### 4. Hook Intent Metadata
 
-The updater currently knows structure better than intent.
+The updater now infers intent automatically from disassembly. The remaining work here is adding authored intent as a per-hook field in the CT schema so the pipeline can reject candidates that structurally contradict it — not just penalize them probabilistically.
 
-A metadata layer per hook could store:
-
-- hook intent: `write`, `read`, `compare`, `branch_patch`, `callsite`
-- expected opcode families
-- required nearby features
-- forbidden nearby features
-- notes about why the hook exists
-
-Why it helps:
-
-- preprocess gets better
-- postprocess gets better
-- previews become clearer
-- manual review becomes faster
-- history reuse becomes safer
-
-This is one of the highest-value improvements because it adds semantics, not just more scoring.
+This is the highest remaining value-add because it upgrades the system from "infer intent" to "assert intent."
 
 ### 5. Module-Wide Uniqueness Fallback
 
-The current uniqueness check is useful, but it is method-local.
+The current uniqueness check is method-local.
 
 Add:
 
@@ -116,26 +64,9 @@ Why it helps:
 
 - it prevents globally bad anchors from being accepted just because they are locally unique
 
-### 6. AI Packet Bundling
+### 6. AI Packet Bundling ✅ Done
 
-Right now the pipeline emits multiple useful reports, but a dedicated AI handoff packet would be even better.
-
-The packet should include:
-
-- hook metadata
-- original pattern
-- best candidate
-- backup candidates
-- uniqueness result
-- stability result
-- method-diff summary
-- patch preview snippet
-- recommended patch
-- confidence and risk summary
-
-Why it helps:
-
-- any AI performs better when it gets one compact, complete packet instead of several loosely connected outputs
+`bundle/` is implemented and wired into `--write-artifacts`. Each escalated run writes `*.ai_bundle.json` and `*.ai_bundle.md` combining preprocess, postprocess, method diff, and flow summary.
 
 ### 7. History Promotion Workflow
 
@@ -153,40 +84,25 @@ Why it helps:
 
 - old accepted fixes stop biasing future ranking too strongly when they are no longer relevant
 
-### 8. Regression Harness
+### 8. Regression Harness ✅ Partially Done
 
-This is one of the most important long-term additions.
+`tests/` contains 54 offline unit tests covering lint, stability heuristics, intent rescoring, and template generation. These run without a bridge.
 
-Build a small offline test harness with:
+Remaining: real game fixtures — sample CT files with expected winner candidates, expected recommended patterns, and expected patch previews. These cannot be created without live game runs.
 
-- sample CT files
-- sample known-good outputs
-- expected winner candidates
-- expected recommended patterns
-- expected patch previews
+### 9. Stronger Pattern Volatility Heuristics ✅ Done
 
-Why it helps:
+`stability/service.py` now includes `_volatile_indexes()`, a byte-pattern scanner that detects:
 
-- pipeline changes can be evaluated against real update scenarios
-- tuning becomes measurable instead of guesswork
+- `E8/E9 rel32` call/jmp offsets
+- `EB/7x rel8` short branches
+- `0F 8x rel32` near Jcc branches
+- `[REX] 8B/8D/89 [rip+disp32]` RIP-relative MOV/LEA
+- `FF 15 [rip+disp32]` indirect calls
+- `[REX.W] B8+r imm64` MOV register immediate
+- `[REX] C7 /0 imm32` struct field store
 
-### 9. Stronger Pattern Volatility Heuristics
-
-The stability analyzer can get smarter by recognizing the kinds of bytes that commonly drift between builds.
-
-Examples:
-
-- displacements
-- relative branches
-- immediates
-- RIP-relative accesses
-- struct offsets
-- compiler padding
-
-Why it helps:
-
-- wildcarding becomes more principled
-- recommended signatures become more durable
+`StabilityReport` now exposes `predicted_volatile_indexes` and `hardened_pattern` — the hardened form wildcards both empirically changed bytes and structurally predicted volatile positions.
 
 ### 10. AOB Synthesizer With Explicit Objectives
 
@@ -204,18 +120,17 @@ Why it helps:
 
 - the AI has fewer tradeoffs to resolve manually
 
-## Highest-Value Priorities
+## Highest-Value Remaining Items
 
-If the goal is specifically "less work for any AI," the highest-value next items are:
+If the goal is specifically "less work for any AI," the highest-value remaining items are:
 
-1. hook intent metadata
-2. method-diff integration into artifacts
-3. constraint-based candidate rejection
-4. AI packet bundling
-5. regression harness
-6. stronger history management
+1. authored hook intent metadata per-hook (converts probabilistic penalty to hard constraint)
+2. real game regression fixtures (makes tuning measurable)
+3. history management improvements (acceptance status, version tagging, decay)
+4. module-wide uniqueness fallback
+5. AOB synthesizer with explicit objectives
 
-These will usually reduce reasoning load more than adding another scoring heuristic.
+Items 1–6 from the original list and item 9 are now done.
 
 ## Why These Matter
 
