@@ -5,6 +5,7 @@ preserve all formatting, comments, and CDATA sections exactly.
 """
 from __future__ import annotations
 
+import difflib
 import re
 import shutil
 from pathlib import Path
@@ -81,24 +82,17 @@ def _apply_pattern_fix(text: str, result: AOBResult) -> tuple[str, bool]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def apply_fixes(
-    ct_path: str,
+def apply_fixes_to_text(
+    text: str,
     aob_results: list[AOBResult],
     assert_results: list[AssertResult],
-    dry_run: bool = False,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], list[str]]:
     """
-    Apply all auto-fixable results to the CT file text.
+    Apply auto-fixable results to raw CT text in memory.
 
     Returns:
-        (output_path, list_of_applied_fix_descriptions)
-
-    If dry_run=True, the file is not written; output_path will be ''.
+        (new_text, applied_messages, skipped_messages)
     """
-    source = Path(ct_path)
-    text = source.read_text(encoding='utf-8', errors='replace')
-    original = text
-
     applied: list[str] = []
     skipped: list[str] = []
 
@@ -106,7 +100,6 @@ def apply_fixes(
         if not r.can_auto_fix:
             continue
         entry = r.entry
-        prev_text = text
 
         if r.status == Status.RANGE_MISS and r.new_range:
             text, ok = _apply_range_fix(text, r)
@@ -134,6 +127,53 @@ def apply_fixes(
                     )
             else:
                 skipped.append(f'[BYTES-FAIL] {entry.name}: could not replace pattern in file')
+
+    return text, applied, skipped
+
+
+def preview_fixes(
+    ct_path: str,
+    aob_results: list[AOBResult],
+    assert_results: list[AssertResult],
+    context_lines: int = 1,
+) -> tuple[list[str], list[str], str]:
+    """
+    Generate a unified diff preview for all auto-fixable changes.
+
+    Returns:
+        (applied_messages, skipped_messages, unified_diff_text)
+    """
+    source = Path(ct_path)
+    original = source.read_text(encoding='utf-8', errors='replace')
+    updated, applied, skipped = apply_fixes_to_text(original, aob_results, assert_results)
+    diff = '\n'.join(difflib.unified_diff(
+        original.splitlines(),
+        updated.splitlines(),
+        fromfile=source.name,
+        tofile=source.with_suffix('.updated.CT').name,
+        n=context_lines,
+        lineterm='',
+    ))
+    return applied, skipped, diff
+
+
+def apply_fixes(
+    ct_path: str,
+    aob_results: list[AOBResult],
+    assert_results: list[AssertResult],
+    dry_run: bool = False,
+) -> tuple[str, list[str]]:
+    """
+    Apply all auto-fixable results to the CT file text.
+
+    Returns:
+        (output_path, list_of_applied_fix_descriptions)
+
+    If dry_run=True, the file is not written; output_path will be ''.
+    """
+    source = Path(ct_path)
+    original = source.read_text(encoding='utf-8', errors='replace')
+    text, applied, skipped = apply_fixes_to_text(original, aob_results, assert_results)
 
     if skipped:
         print('\nWarnings (could not apply):')
