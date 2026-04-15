@@ -1,309 +1,267 @@
 # CT Feature Discovery Guide
 
-This document explains how to use the current updater pipeline and supporting tools to build new Cheat Engine table features, especially when the new feature is not a direct update of an existing hook.
+This document explains how to use the current feature-building tools to create new Cheat Engine hooks from a nearby reference instead of starting from nothing.
 
-Typical examples:
+The most important idea is:
 
-- you already know the `Money` hook and want to build a `Gems` or `Wood` hook
-- you know where one resource is written and want to find a related resource
-- you have a hook for one gameplay stat and want to add another nearby stat
-- you have a close reference but not an exact AOB or script for the new feature yet
+- use a known working feature as the anchor
+- let the tooling narrow and validate candidates
+- only then build the final Auto Assembler script
 
-## What The Current Pipeline Is Good At
+## What Is Built Today
 
-The current `ct_updater` pipeline is strongest when it helps answer:
+The current feature-building path is:
 
-- where should the new feature attach?
-- which candidate location is most likely correct?
-- is the AOB unique enough to trust?
-- how should unstable bytes be wildcarded?
-- how can the result be packaged so an AI or human can finish the script quickly?
+1. build a feature packet from a known reference hook
+2. inspect ranked candidates, intent labels, and sibling-field hints
+3. turn the chosen candidate into an Auto Assembler scaffold
 
-It is weaker at:
+The main tools are:
 
-- inventing the final Auto Assembler logic from nothing
-- proving gameplay semantics with no nearby reference
-- rebuilding a feature whose logic has moved far away from known code
+- `python -m ct_updater.feature_builder`
+- `python -m ct_updater.script_template_generator`
 
-So the best way to use the pipeline for new features is:
+Supporting helpers used inside the packet flow:
 
-- use it as a hook-discovery and validation layer
-- then use AI or manual scripting to build the final enable/disable script
+- `hook_intent_classifier/`
+- `sibling_field_finder/`
+- `method_diff/`
+- `preprocess/`
+- `postprocess/`
+- `uniqueness/`
+- `stability/`
 
-## Best Mindset
+## When To Use This Workflow
 
-When building a brand new feature, do not start by asking:
+This workflow is best when:
 
-- "What is the exact final AOB?"
-
-Start by asking:
-
-- "What known feature is closest in behavior?"
-- "What code path probably handles both of them?"
-- "What known write/read/check can serve as my reference?"
-
-The closer the reference, the less work any AI has to do.
-
-## Recommended Workflow
-
-### 1. Start From The Closest Known Feature
-
-If you already have one hook that works, use it as your anchor.
+- you already have one related hook that works
+- the new feature is probably in the same method or system
+- you want the tooling to reduce the search space before scripting
 
 Examples:
 
-- known `Money` write -> look for `Gems` write
-- known `Health` write -> look for `Mana` or `Stamina` write
-- known `XP` add -> look for `Skill XP` or `Crafting XP` add
+- you know the `Money` hook and want `Gems`
+- you know one health/stat write and want a sibling stat
+- you know one inventory/resource path and want another field on the same object
 
-Good reference features usually share one or more of these:
+This workflow is weaker when:
 
-- same method
+- the new feature has no nearby reference at all
+- the target logic moved into a totally unrelated subsystem
+- the final script behavior is highly custom and not a standard hook scaffold
+
+## Step 1: Choose The Closest Reference Hook
+
+Do not start by asking for the final AOB.
+
+Start by asking:
+
+- which known hook is closest in behavior?
+- which known hook likely touches the same structure or method?
+- which known hook gives me the smallest search area?
+
+A good reference usually shares one or more of:
+
+- same symbol
 - same caller
-- same structure
-- same transaction logic
-- same UI update path
+- same structure base register
+- same write pattern
+- same branch ladder or compare path
 
-### 2. Identify The Shared Context
+## Step 2: Build A Feature Packet
 
-Before trying to build a new AOB, ask what the old and new resources probably have in common.
+Use the feature builder against a known CT reference.
 
-Common relationships:
+Example:
 
-- same resource manager object
-- same inventory array
-- same player stats structure
-- same function with a different field offset
-- same update function with a different opcode path
+```powershell
+python -m ct_updater.feature_builder `
+  --ct-file "C:\path\to\Table.CT" `
+  --reference "Infinite Item Usage"
+```
 
-If `Money` and `Wood` are both resources, there is a good chance:
+This writes:
 
-- they live in the same structure
-- they are updated in the same method
-- they differ by offset, index, enum, or branch path
+- `<Table>.feature_packet.json`
+- `<Table>.feature_packet.md`
 
-That is the kind of relationship the pipeline can help narrow.
+You can also choose explicit output paths:
 
-### 3. Capture A Reference Window
+```powershell
+python -m ct_updater.feature_builder `
+  --ct-file "C:\path\to\Table.CT" `
+  --reference "Money" `
+  --json-out "C:\work\Money.feature_packet.json" `
+  --md-out "C:\work\Money.feature_packet.md"
+```
 
-Once you have a known-good feature:
+### Useful feature-builder options
 
-- disassemble the known hook window
-- keep the nearby instruction block
-- note what kind of behavior it represents
+- `--reference`
+  Hook name or description from the CT.
 
-Important things to note:
+- `--target-symbol`
+  Override the symbol to search when reusing the reference pattern shape against a different method.
 
-- is this a write or a read?
-- is this integer or float?
-- does it write directly to memory?
-- is there a nearby compare and branch?
-- is there a nearby call that looks like a notifier, validator, or clamping step?
+- `--target-range`
+  Override the scan range.
 
-This gives you a pattern of intent, not just bytes.
+- `--top`
+  Number of ranked candidates to keep.
 
-### 4. Search For Nearby Related Logic
+- `--disasm-count`
+  Number of instructions captured per window.
 
-This is where the pipeline starts helping directly.
+- `--search-multiplier`
+  How aggressively to sample nearby windows.
 
-Use the known feature to investigate nearby code:
+- `--no-mono`
+  Skip Mono initialization if already active.
 
-- same method
-- nearby methods
-- same symbol namespace
-- same structure offsets
+## Step 3: Read The Feature Packet
+
+The feature packet is the main review artifact for building new features.
+
+It includes:
+
+- the original reference hook
+- the reference instruction window
+- an intent label for that window
+- sibling-field candidates near the reference
+- ranked candidate windows
+- recommended patterns
+- candidate-specific scan ranges
+- method diff summaries
+
+### What To Look For
+
+When reviewing candidates, prioritize:
+
 - similar instruction shape
+- same structure base register
+- nearby field offsets
+- a good recommended pattern
+- a sensible candidate-specific scan range
+- stable uniqueness and stability signals
 
-The goal is to generate candidate windows for the new feature that are "close enough" to the known feature to compare.
+If the best candidate has:
 
-### 5. Use The Pipeline To Reduce Candidates
+- low confidence
+- bad uniqueness
+- very different instruction shape
+- no obvious relation to the reference
 
-Once you have a likely method or neighborhood, use the tools to narrow the possibilities.
+then do not jump straight to scripting.
 
-Useful tools:
+## Step 4: Use The Packet To Reduce Human Or AI Work
 
-- `preprocess`
-  narrows candidate windows and captures disassembly
+The packet is designed to replace the old manual workflow of:
 
-- `postprocess`
-  ranks candidate windows and suggests a signature
+- find a hook
+- dump nearby disassembly
+- run two or three side tools
+- manually compare candidates
+- then guess a script
 
-- `uniqueness`
-  checks whether the proposed AOB is actually safe to use
+Instead, the packet should already answer most of:
 
-- `stability`
-  helps choose which bytes should be wildcarded
+- which candidate is most likely related?
+- what AOB should I start from?
+- what scan range should I use?
+- does this look like a write, read, compare gate, or mixed path?
+- are there sibling field offsets nearby?
 
-- `method_diff`
-  compares the known feature window against a new candidate window
+That makes AI prompts much smaller and better.
 
-- `preview`
-  helps inspect what would actually change if you convert an existing script
+Good AI question:
 
-### 6. Ask The Right Type Of Question
+- "This packet comes from a working Money hook. Candidate 1 and candidate 2 both look related. Which is more likely to be the sibling resource write for Gems?"
 
-When using AI, avoid broad prompts like:
+Bad AI question:
 
-- "Make me a Gems cheat"
+- "Find me a Gems cheat from the whole binary."
 
-That forces the model to solve everything at once.
+## Step 5: Generate A Script Scaffold
 
-Instead ask smaller, structured questions:
-
-- "I know this Money write hook. Which nearby candidate looks like the same resource update path for Gems?"
-- "Compare these two instruction windows. Which one is a write to a sibling field rather than the same field?"
-- "Use this candidate and generate a safe AOB with wildcards."
-- "Turn this hook location into an Auto Assembler script that mirrors the Money script structure."
-
-The pipeline makes those questions smaller and more answerable.
-
-## Example: Money To Another Resource
-
-Say you already know how the `Money` code works and want to make another resource code.
-
-A good practical sequence is:
-
-1. Find the known `Money` hook.
-2. Capture the nearby disassembly.
-3. Determine whether it is:
-   - direct write to `[base+offset]`
-   - indexed array access
-   - resource type switch
-   - call into a generic "add resource" routine
-4. Identify nearby sibling writes or branches.
-5. Use candidate narrowing on those neighboring paths.
-6. Compare the known `Money` window to the new candidate with `method_diff`.
-7. Use `uniqueness` and `stability` on the proposed new AOB.
-8. Generate the final Auto Assembler script from the now-trusted hook point.
-
-In many games, the new resource is not an entirely separate system. It is often:
-
-- the same code path with a different offset
-- the same code path with a different enum or index
-- the same write pattern on a sibling field
-
-That is exactly where reference-driven discovery works best.
-
-## Heuristics For "Close To It" Features
-
-If you have a nearby reference but not the exact feature, look for these relationships.
-
-### Same Structure, Different Offset
+Once you trust a packet candidate, generate a CE Auto Assembler scaffold.
 
 Example:
 
-- `Money` at `[rcx+220]`
-- another resource at `[rcx+228]`
+```powershell
+python -m ct_updater.script_template_generator `
+  --feature-packet "C:\work\Money.feature_packet.json" `
+  --candidate-index 0 `
+  --out "C:\work\Money.generated.aa.txt"
+```
 
-Clues:
+This uses the selected packet candidate and emits:
 
-- same base register
-- same write instruction shape
-- only the displacement changes
+- `aobscanregion(...)`
+- `alloc(...)`
+- labels
+- `registersymbol(...)`
+- jump scaffold
+- disable section scaffold
 
-### Same Function, Different Branch
+The generator now prefers the candidate-specific scan range from the packet, not just the original CT range.
 
-Example:
+You can also generate directly without a packet:
 
-- branch A updates one resource
-- branch B updates another
+```powershell
+python -m ct_updater.script_template_generator `
+  --feature-name "MoneyHook" `
+  --symbol "GameSymbol:Method" `
+  --pattern "41 89 46 18 85 C0" `
+  --scan-range 255
+```
 
-Clues:
+## Step 6: Finish The Script Logic
 
-- same compare ladder
-- different immediate or enum
-- same eventual write form
+The script generator creates the hook scaffold, not the final cheat behavior.
 
-### Same Caller, Different Callee Path
+You still need to decide:
 
-Example:
+- what to overwrite or preserve
+- whether to detour, NOP, clamp, or force a value
+- what original instructions need to be restored
+- what the disable path must undo safely
 
-- one caller dispatches to multiple resource handlers
+That part still needs game-specific judgment.
 
-Clues:
+## Practical Example: Money To Another Resource
 
-- same top-level method
-- multiple nearby calls with similar surrounding code
+A strong workflow for "I know Money, now I want another resource" is:
 
-### Same Array, Different Index
+1. build a packet from the known `Money` hook
+2. inspect sibling-field candidates and top-ranked windows
+3. compare field offsets and instruction shape
+4. choose the candidate that looks like the same resource path with a different field or branch
+5. generate a scaffold from that candidate
+6. write only the game-specific detour logic yourself
 
-Example:
+This is usually much better than trying to ask an AI to invent the new hook from scratch.
 
-- resources are stored in one array
-- money is index 0, another resource is index 3
+## What Makes A Strong Candidate
 
-Clues:
+A good new-feature candidate usually has:
 
-- same array base
-- same scale/index math
-- different constant used in the path
+- a shape similar to the reference window
+- the same base register with a different displacement
+- the same method or a nearby path in the same routine
+- a unique enough signature
+- a recommended pattern that is not obviously brittle
+- a scan range that makes sense for the found offset
 
-## How To Reduce AI Work
+## What This Workflow Does Not Replace
 
-If the goal is to make feature creation easier for any AI, try to provide:
+These tools reduce search and validation work, but they do not replace:
 
-- one known-good hook
-- one to three candidate windows
-- the likely relationship between them
-- the desired intent of the new feature
+- gameplay testing
+- script safety review
+- enable/disable correctness
+- understanding what the code actually does
 
-Good example:
+The tooling helps you trust the hook location.
 
-- "This is the working Money hook. I think Gems is either candidate A or B. Both are writes in the same method. Which is more likely a sibling resource write?"
-
-Bad example:
-
-- "Find a new resource cheat from this whole binary."
-
-The smaller and more relational the question is, the better the result.
-
-## What Makes A Candidate Good For A New Feature
-
-A strong candidate for a brand new feature usually has:
-
-- similar instruction shape to the known feature
-- similar placement within the same method or system
-- a write/read/check pattern consistent with the intended behavior
-- a unique enough AOB
-- a stable enough byte pattern to survive updates
-
-This is why the updater pipeline still helps even when the feature is new.
-
-It does not have to know the whole feature. It just has to help you trust the hook point.
-
-## Suggested Practical Process
-
-Use this as a repeatable checklist.
-
-1. Start with the nearest known working hook.
-2. Write down what that hook is doing semantically.
-3. Find nearby sibling code paths.
-4. Reduce to a small candidate set.
-5. Compare candidate windows against the known hook.
-6. Check uniqueness.
-7. Check stability.
-8. Synthesize a durable AOB.
-9. Generate the final script only after the hook point looks trustworthy.
-10. Preview the result before treating it as final.
-
-## What The Pipeline Does Not Replace
-
-Even with all the current tools, you still need judgment for:
-
-- choosing the actual cheat behavior
-- deciding whether to NOP, overwrite, detour, clamp, or force a value
-- handling side effects
-- deciding if a script is enable/disable-safe
-- validating in-game behavior
-
-The pipeline helps you get to a good hook faster. It does not eliminate the need to understand what the code is supposed to do.
-
-## Bottom Line
-
-The best use of the current pipeline for brand new CT features is:
-
-- use an existing feature as a reference
-- use the pipeline to narrow, compare, validate, and stabilize a new hook point
-- only then generate the final script
-
-If you are building something close to an existing feature, like turning `Money` knowledge into another resource code, this workflow can reduce a large amount of the search and validation work.
+It does not prove the final cheat semantics for you.

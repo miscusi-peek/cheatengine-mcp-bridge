@@ -1,6 +1,6 @@
 # CT Updater Status
 
-This document summarizes what is currently built, what is partially complete, and what is still not implemented in the local `ct_updater` workspace.
+This document summarizes what is currently implemented in the local `ct_updater` workspace and what is still missing.
 
 ## Completed
 
@@ -11,166 +11,146 @@ This document summarizes what is currently built, what is partially complete, an
 - `analyzer.py`
 - `patcher.py`
 - `workflow.py`
-- orchestrated `ct_updater` main flow in `__main__.py`
+- orchestrated updater flow in `ct_updater/__main__.py`
 
-### Preprocess and postprocess
+### Updater pipeline modules
 
 - `preprocess/`
-  - candidate generation
-  - candidate scoring
-  - disassembly capture
-  - JSON and Markdown reports
+  Candidate generation, candidate scoring, disassembly capture, and reports.
 
 - `postprocess/`
-  - rescoring
-  - recommended pattern selection
-  - backup candidates
-  - decision reports
+  Candidate rescoring, recommendation selection, backups, and decision reports.
 
-### Patch and review support
-
-- patch preview via `preview_fixes()` in `patcher.py`
-- `--preview-only`
-- flow summary output
-- artifact writing:
-  - `*.preprocess.json`
-  - `*.preprocess.md`
-  - `*.decision.json`
-  - `*.decision.md`
-
-### AI handoff
-
-- `bundle/`
-- AI bundle artifacts:
-  - `*.ai_bundle.json`
-  - `*.ai_bundle.md`
-
-### Extra updater tooling
+- `preview/`
+  Preview support built on the same patch logic as real writes.
 
 - `uniqueness/`
+  Pattern match counting and uniqueness classification.
+
 - `stability/`
+  Stability scoring and wildcard-oriented signature support.
+
 - `method_diff/`
+  Normalized instruction-window diffing.
+
 - `history_store/`
+  JSON-backed accepted-fix history lookup and recording.
 
-### Integrated into the updater flow
+- `bundle/`
+  Combined AI handoff artifacts.
 
-- optional postprocess-driven auto-fix
-- preview scoring and risk breakdown
-- history-backed ranking hint
-- optional history recording
-- method-diff included in decision artifacts
-- AI bundle generation in artifact output
+### Updater flow features
 
-### New feature tooling
+- `--preview-only`
+- `--apply-postprocess-fix`
+- `--write-artifacts`
+- `--artifact-dir`
+- `--history-store`
+- `--record-history`
+- `--lint`
+- flow summary output
+- preview risk breakdown
+- AI bundle artifact generation
+- method diff included in escalated decision artifacts
+
+### Feature-building tools
 
 - `feature_builder/`
-  - reference-driven feature packet generation
-
-- `sibling_field_finder/`
-  - sibling offset and sibling field discovery
+  Reference-driven packet generation for new features.
 
 - `hook_intent_classifier/`
-  - write/read/compare/branch/callsite heuristic labeling
+  Heuristic intent labeling for instruction windows.
 
-### Documentation
+- `sibling_field_finder/`
+  Nearby same-base field and offset discovery.
 
-- `CT_UPDATER_PIPELINE.md`
-- `CT_UPDATER_FUTURE_IMPROVEMENTS.md`
-- `CT_FEATURE_DISCOVERY_GUIDE.md`
+- `script_template_generator/`
+  Auto Assembler scaffold generation from a feature packet or direct inputs.
 
-### Live test coverage
+### Live validation completed
 
-The updater pipeline was tested against `PillarsOfEternity.CT`.
+The current pipeline was exercised against `PillarsOfEternity.CT` with a live CE bridge connection.
 
-Observed result:
+Confirmed in practice:
 
-- bridge connection worked
-- preview path worked
-- fast-path repair matched the existing manual `.updated.CT` range fix
+- updater parse and bridge flow worked
+- lint ran against the live target
+- preview mode matched the known manual range fix
+- feature packet generation worked against a live reference hook
+- script scaffold generation worked from that packet
+- candidate-specific scan ranges propagated into generated script output
 
 ## Partially Completed
 
 ### Method diff
 
-- built
-- integrated into artifacts
-- currently only provides normalized instruction diffing, not semantic reasoning
+- built and wired into artifacts
+- currently reports normalized instruction diffs, not deeper semantic reasoning
 
-### History
+### History store
 
-- built and integrated as a ranking hint and recording store
+- built and integrated into ranking and recording
 - still basic
-- no accepted/rejected workflow
+- no approval workflow
 - no version tagging
 - no confidence decay
-- no promotion policy beyond latest-match lookup
 
-### Uniqueness
+### Stability heuristics
 
-- built
-- used in ranking and reporting
-- not a universal veto before every fast-path auto-fix
-- scoped to sampled method memory rather than broader module validation
+- useful and integrated
+- still relatively simple
+- not yet instruction-encoding-aware
 
-### Stability
+### Uniqueness scope
 
-- built
-- used in ranking and signature recommendation
-- still a relatively simple heuristic
-- does not yet do deeper instruction-encoding-aware volatility analysis
+- integrated into ranking and reporting
+- strongest inside sampled method memory
+- not yet a full module-wide uniqueness pass
 
-### New feature discovery
+### Script template generation
 
-- `feature_builder`, `sibling_field_finder`, and `hook_intent_classifier` are built
-- they are still sidecar tools rather than one unified end-to-end new-feature pipeline
-- no final script generation layer yet
+- scaffold generation is implemented
+- final detour logic and disable-byte restoration still require manual completion
 
-### AI bundle
+### Feature discovery quality
 
-- built and useful
-- not yet the sole primary artifact everywhere
+- the packet flow is usable now
+- heuristic quality still depends on the closeness of the reference hook
+- some cases will still need manual reasoning after the packet is produced
 
 ## Not Completed
 
-These items were discussed but are not implemented yet.
+### Metadata and intent systems
 
-### Semantic and metadata layers
-
-- hook intent metadata system
-- constraint-based candidate rejection based on explicit hook intent
-- feature metadata store
-
-### Script generation and probing
-
-- Auto Assembler script template generator
-- behavior probe helper
-- patch safety validator for new feature scripts
+- explicit hook intent metadata store
+- constraint-based rejection using authored hook intent metadata
+- durable feature metadata layer
 
 ### Deeper discovery tools
 
-- field/offset cluster scanner
+- field cluster scanner
 - call-chain explorer
 - resource pattern finder
+- behavior probe helper
 
 ### Validation and regression
 
-- meaningful regression harness with real fixtures
-- richer history promotion workflow
+- regression harness with real fixtures
+- richer accepted/rejected history workflow
 - module-wide uniqueness fallback
-- stronger volatility heuristics based on instruction encoding roles
-- more advanced AOB synthesizer with explicit shortness/readability objectives
-- full semantic method diff
+- stronger volatility heuristics based on operand and encoding roles
+- more semantic method-diff layer
 
 ### Fully automated feature creation
 
-- end-to-end new-feature generator
+- complete end-to-end feature creation without human script logic work
 
 ## Important Local-State Note
 
-This status document describes what is implemented in the local workspace.
+This document describes what is implemented in the local workspace and branch.
 
-It does not imply that all of these files are committed or merged.
+Private local-only content should still remain uncommitted publicly.
 
-Also:
+In particular:
 
-- `AI_Context/CT_Updater_Guidance.md` remains local-only and should not be committed publicly
+- `AI_Context/CT_Updater_Guidance.md` is local-only
