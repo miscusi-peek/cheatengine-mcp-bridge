@@ -261,19 +261,22 @@ The internal order is:
 The supporting modules are:
 
 - `workflow.py`
-  Main decision tree for AOBs.
+  Main decision tree for AOBs. Also classifies each candidate's instruction window using `hook_intent_classifier` and populates `intent_label` on each `CandidateInput`.
 
 - `preprocess/`
   Candidate sampling, initial scoring, and disassembly capture.
 
 - `postprocess/`
-  Candidate rescoring, recommendation, and backup ranking.
+  Candidate rescoring using 8 signals: byte similarity (0.33), confidence (0.19), mnemonic shape (0.15), structural markers (0.10), uniqueness (0.10), stability (0.05), history alignment (0.05), intent consistency (0.03). Raises `intent_conflict_with_backup` flag when top two candidates disagree on intent class.
 
 - `uniqueness/`
   Counts candidate pattern matches and classifies ambiguity.
 
 - `stability/`
-  Scores how durable a candidate signature appears.
+  Scores how durable a candidate signature appears. Also runs structural byte-encoding heuristics (`_volatile_indexes`) to predict which bytes are likely to drift between builds even when currently matching. Exposes `hardened_pattern` with both empirical and predicted wildcards.
+
+- `hook_intent_classifier/`
+  Classifies an instruction window into one of: `write`, `read`, `read_modify_write`, `branch_gate`, `callsite`, `compare`, `mixed`. Used by both `workflow.py` and `feature_builder/`.
 
 - `method_diff/`
   Compares normalized instruction windows.
@@ -283,6 +286,9 @@ The supporting modules are:
 
 - `patcher.py`
   Writes or previews the actual CT text change.
+
+- `lint/`
+  Pre-flight CT quality scan (no bridge required for most checks). Flags zero-wildcard dense patterns, tight scan ranges, duplicate AOBs, and unresolvable assert symbols.
 
 ## Practical Interpretation
 

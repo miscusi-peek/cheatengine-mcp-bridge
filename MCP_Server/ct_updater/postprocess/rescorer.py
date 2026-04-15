@@ -1,8 +1,29 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from .instruction_compare import mnemonic_similarity, structural_similarity
 from .models import HookInput, ScoredCandidate
 from .signature_synthesizer import synthesize_signature, uniqueness_score
+
+
+def _majority_intent(candidates) -> str:
+    """Return the plurality intent label across all candidates, ignoring empty and 'mixed'."""
+    labels = [c.intent_label for c in candidates if c.intent_label and c.intent_label != "mixed"]
+    if not labels:
+        return ""
+    return Counter(labels).most_common(1)[0][0]
+
+
+def _intent_consistency_score(candidate, majority_intent: str) -> float:
+    """Score how well this candidate's intent aligns with the plurality intent."""
+    if not majority_intent or not candidate.intent_label:
+        return 0.5  # neutral when unknown
+    if candidate.intent_label == majority_intent:
+        return 1.0
+    if candidate.intent_label == "mixed":
+        return 0.65  # mixed is ambiguous, not necessarily wrong
+    return 0.2  # clearly different intent
 
 
 def _history_alignment_score(hook: HookInput, candidate) -> float:
@@ -43,6 +64,8 @@ def _reason_codes(candidate, hook: HookInput, mnemonic_score: float, structural_
         codes.append("mixed_signature_stability")
     if hook.history_pattern:
         codes.append("history_baseline_available")
+    if candidate.intent_label:
+        codes.append(f"intent_{candidate.intent_label}")
     return codes
 
 
@@ -58,6 +81,7 @@ def _rejected_reason(candidate, final_score: float) -> str | None:
 
 def rescore_hook(hook: HookInput) -> list[ScoredCandidate]:
     rescored: list[ScoredCandidate] = []
+    majority_intent = _majority_intent(hook.candidates)
 
     for candidate in hook.candidates:
         mnemonic_score = mnemonic_similarity(candidate.instructions)
@@ -65,15 +89,17 @@ def rescore_hook(hook: HookInput) -> list[ScoredCandidate]:
         uniqueness = uniqueness_score(candidate)
         stability = candidate.stability_score
         history_score = _history_alignment_score(hook, candidate)
+        intent_score = _intent_consistency_score(candidate, majority_intent)
 
         final_score = (
-            candidate.byte_score * 0.35 +
-            candidate.confidence * 0.20 +
+            candidate.byte_score * 0.33 +
+            candidate.confidence * 0.19 +
             mnemonic_score * 0.15 +
             structural_score * 0.10 +
             uniqueness * 0.10 +
             stability * 0.05 +
-            history_score * 0.05
+            history_score * 0.05 +
+            intent_score * 0.03
         )
 
         rescored.append(ScoredCandidate(
@@ -91,4 +117,16 @@ def rescore_hook(hook: HookInput) -> list[ScoredCandidate]:
         ))
 
     rescored.sort(key=lambda item: item.final_score, reverse=True)
+
+    # Flag if the top two candidates disagree on intent — the human should pick
+    if (
+        len(rescored) >= 2
+        and rescored[0].candidate.intent_label
+        and rescored[1].candidate.intent_label
+        and rescored[0].candidate.intent_label != "mixed"
+        and rescored[1].candidate.intent_label != "mixed"
+        and rescored[0].candidate.intent_label != rescored[1].candidate.intent_label
+    ):
+        rescored[0].reason_codes.append("intent_conflict_with_backup")
+
     return rescored
