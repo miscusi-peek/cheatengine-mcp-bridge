@@ -93,6 +93,38 @@ New handlers are appended with unit markers (e.g. `-- >>> BEGIN UNIT-NN <Title> 
 ### Pagination
 List-returning commands (scan results, memory regions, modules, threads, disassembly, references, BP hits) support `offset` / `limit` params with a standard `{ total, offset, limit, returned, <key>: [...] }` return shape.
 
+## CT Table Auto-Updater (`MCP_Server/ct_updater/`)
+
+A standalone Python tool that checks whether an existing `.CT` cheat table still works after a game update and auto-patches what it can. Run from `MCP_Server/`:
+
+```bash
+python -m ct_updater "path/to/Game.CT"          # check + write .updated.CT
+python -m ct_updater "path/to/Game.CT" --no-patch   # report only
+python -m ct_updater "path/to/Game.CT" --verbose    # include disassembly for broken patterns
+```
+
+### Module responsibilities
+
+| File | Purpose |
+|------|---------|
+| `bridge.py` | Named pipe client — connects to `CE_MCP_Bridge_v99`, wraps `evaluate_lua`, `read_memory`, `disassemble` |
+| `parser.py` | Parses `.CT` XML — extracts `aobscanregion(...)`, `assert(...)`, and pointer entries from `<AssemblerScript>` blocks. Handles CE number literals (bare hex `10C` vs decimal `100`). |
+| `analyzer.py` | Resolves each Mono symbol, reads method memory, scores pattern matches. Returns typed results: `OK`, `RANGE_MISS`, `BYTE_CHANGE`, `PARTIAL`, `NOT_FOUND`, `NO_SYMBOL`. |
+| `patcher.py` | Applies auto-fixes to the raw `.CT` text and writes `*.updated.CT`. Operates as string replacement (not XML re-serialisation) to preserve formatting. |
+| `__main__.py` | CLI entry point — orchestrates the above, renders the colour report, calls the patcher. |
+
+### Auto-fix rules
+
+- **`RANGE_MISS`**: pattern found but outside the `aobscanregion` end offset → extends the range.
+- **`BYTE_CHANGE`** (≥85% match): a few bytes differ (e.g. struct field shifted) → substitutes the changed bytes and optionally extends range.
+- Everything else (`PARTIAL`, `NOT_FOUND`, `assert` failures) requires manual rewrite — the tool flags these clearly with match scores and optional disassembly.
+
+### Key invariants to maintain
+
+- The parser uses `_parse_ce_number()` for all numeric literals — always try hex-with-letter-detection before decimal, since CE auto-assembler uses bare hex (e.g. `10C`) without a `0x` prefix.
+- The patcher never modifies the original file; it writes `*.updated.CT` (and backs up any existing `.updated.CT` to `.bak.CT`).
+- `bridge.py` must remain compatible with both v11.4.x and v12.x bridges — same pipe name, same `evaluate_lua` method, same `read_memory` response shape (`bytes` list or `data` hex string).
+
 ## Reference material in `AI_Context/`
 
 - `MCP_Bridge_Command_Reference.md` — exhaustive per-command reference with request/response examples. Consult this when working on a specific tool instead of grepping the Lua file.
