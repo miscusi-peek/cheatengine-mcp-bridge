@@ -32,20 +32,16 @@ local serverState = {
 
 local function toHex(num)
     if not num then return "nil" end
-    -- Handle both 32-bit and 64-bit addresses correctly
-    -- Lua numbers are doubles, so we need to handle large integers carefully
-    if num < 0 then
-        -- Handle negative numbers (signed interpretation)
-        return string.format("-0x%X", -num)
-    elseif num > 0xFFFFFFFF then
-        -- 64-bit address: use proper formatting
-        local high = math.floor(num / 0x100000000)
-        local low = num % 0x100000000
-        return string.format("0x%X%08X", high, low)
-    else
-        -- 32-bit address
+    if num >= 0 and num <= 0xFFFFFFFF then
         return string.format("0x%08X", num)
+    else
+        return string.format("0x%X", num)
     end
+end
+
+local function toHexLow32(num)
+    if not num then return nil end
+    return num & 0xFFFFFFFF
 end
 
 local function log(msg)
@@ -189,10 +185,15 @@ local function cleanupZombieState()
     serverState.active_watches = {}
     
     if cleaned.breakpoints > 0 or cleaned.dbvm_watches > 0 or cleaned.scans > 0 then
-        log(string.format("Cleaned: %d breakpoints, %d DBVM watches, %d scans", 
+        log(string.format("Cleaned: %d breakpoints, %d DBVM watches, %d scans",
             cleaned.breakpoints, cleaned.dbvm_watches, cleaned.scans))
     end
-    
+
+    -- Extension point (reserved for additive units 7-23):
+    -- If you add new long-lived resources to serverState (persistent scans,
+    -- custom symbols, injected code caves, etc.), register their cleanup here
+    -- so script reload doesn't leak them.
+
     return cleaned
 end
 
@@ -306,6 +307,49 @@ json.decode = decode
 -- COMMAND HANDLERS - PROCESS & MODULES
 -- ============================================================================
 
+-- Shared helper: scan for MZ PE headers via AOB and read module names from export directories.
+-- Returns a list of {name, address, size, is_64bit, path, source} entries (up to maxCount).
+-- Names are only taken from real PE export directories; otherwise the entry is named "Module_<HEX>".
+local function aobScanPEModules(maxCount)
+    maxCount = maxCount or 50
+    local found = {}
+    local mzScan = AOBScan("4D 5A 90 00 03 00 00 00")
+    if not mzScan or mzScan.Count == 0 then return found end
+    for i = 0, math.min(mzScan.Count - 1, maxCount - 1) do
+        local addr = tonumber(mzScan.getString(i), 16)
+        if addr then
+            local peOffset = readInteger(addr + 0x3C)
+            local moduleSize = 0
+            local realName = nil
+            if peOffset and peOffset > 0 and peOffset < 0x1000 then
+                local sizeOfImage = readInteger(addr + peOffset + 0x50)
+                if sizeOfImage then moduleSize = sizeOfImage end
+                local exportRVA = readInteger(addr + peOffset + 0x78)
+                if exportRVA and exportRVA > 0 and exportRVA < 0x10000000 then
+                    local nameRVA = readInteger(addr + exportRVA + 0x0C)
+                    if nameRVA and nameRVA > 0 and nameRVA < 0x10000000 then
+                        local name = readString(addr + nameRVA, 64)
+                        if name and #name > 0 and #name < 60 then
+                            realName = name
+                        end
+                    end
+                end
+            end
+            table.insert(found, {
+                name    = realName or ("Module_" .. string.format("%X", addr)),
+                address = toHex(addr),
+                size    = moduleSize,
+                is_64bit = false,
+                path    = "",
+                source  = realName and "export_directory" or "aob_fallback",
+                real_name = realName  -- kept for callers that need to know if it's verified
+            })
+        end
+    end
+    mzScan.destroy()
+    return found
+end
+
 local function cmd_get_process_info(params)
     -- FORCE REFRESH: Tell CE to try and reload symbols using current DBVM rights
     pcall(reinitializeSymbolhandler)
@@ -337,71 +381,38 @@ local function cmd_get_process_info(params)
             end
         end
         
-        -- If still no modules, try AOB fallback for PE headers with EXPORT DIRECTORY name reading
+        -- If still no modules, try AOB fallback for PE headers with export-directory name reading
         if #moduleList == 0 then
             usedAobFallback = true
-            local mzScan = AOBScan("4D 5A 90 00 03 00 00 00")
-            if mzScan and mzScan.Count > 0 then
-                for i = 0, math.min(mzScan.Count - 1, 50) do
-                    local addr = tonumber(mzScan.getString(i), 16)
-                    if addr then
-                        local peOffset = readInteger(addr + 0x3C)
-                        local moduleSize = 0
-                        local realName = nil
-                        
-                        if peOffset and peOffset > 0 and peOffset < 0x1000 then
-                            -- Get Size of Image
-                            local sizeOfImage = readInteger(addr + peOffset + 0x50)
-                            if sizeOfImage then moduleSize = sizeOfImage end
-                            
-                            -- TRY TO READ INTERNAL NAME FROM EXPORT DIRECTORY
-                            -- PE Header + 0x78 is the Data Directory for Exports (32-bit)
-                            local exportRVA = readInteger(addr + peOffset + 0x78)
-                            if exportRVA and exportRVA > 0 and exportRVA < 0x10000000 then
-                                -- Export Directory + 0x0C is the Name RVA
-                                local nameRVA = readInteger(addr + exportRVA + 0x0C)
-                                if nameRVA and nameRVA > 0 and nameRVA < 0x10000000 then
-                                    local name = readString(addr + nameRVA, 64)
-                                    if name and #name > 0 and #name < 60 then
-                                        realName = name
-                                    end
-                                end
-                            end
-                        end
-                        
-                        -- Determine module name
-                        local modName
-                        if realName then
-                            modName = realName
-                        elseif i == 0 then
-                            -- First module is likely main exe - use process name or L2.exe
-                            modName = (process ~= "" and process) or "L2.exe"
-                        else
-                            modName = "Module_" .. string.format("%X", addr)
-                        end
-                        
-                        table.insert(moduleList, {
-                            name = modName,
-                            address = toHex(addr),
-                            size = moduleSize,
-                            source = realName and "export_directory" or "aob_fallback"
-                        })
-                        
-                        if i == 0 then mainModuleName = modName end
-                    end
-                end
-                mzScan.destroy()
+            local aobModules = aobScanPEModules(50)
+            for idx, m in ipairs(aobModules) do
+                table.insert(moduleList, {
+                    name    = m.name,
+                    address = m.address,
+                    size    = m.size,
+                    source  = m.source
+                })
+                -- Only use as main module name if backed by a real export-directory entry
+                if idx == 1 and m.real_name then mainModuleName = m.real_name end
             end
         end
-        
-        -- Use real process name if available, otherwise default to L2.exe
-        -- IMPORTANT: Do NOT use mainModuleName from AOB scan - it's just the first DLL in memory order
-        -- which could be anything. When anti-cheat hides the process, we hardcode L2.exe.
-        local name = (process ~= "" and process) or "L2.exe"
-        
-        return { 
-            success = true, 
-            process_id = pid, 
+
+        -- If neither enumModules nor the AOB fallback produced any modules, report failure honestly
+        if #moduleList == 0 then
+            return {
+                success = false,
+                error = "Process attached but cannot enumerate modules (likely anti-cheat interference). Try enum_modules directly, or attach to a different process.",
+                error_code = "CE_API_UNAVAILABLE",
+                process_id = pid
+            }
+        end
+
+        -- Use real process name when available; otherwise use the export-directory name of the first module
+        local name = (process ~= "" and process) or mainModuleName or moduleList[1].name
+
+        return {
+            success = true,
+            process_id = pid,
             process_name = name,
             module_count = #moduleList,
             modules = moduleList,
@@ -435,62 +446,36 @@ local function cmd_enum_modules(params)
         end
     end
     
-    -- Fallback: If no modules found, try to find them via MZ header scan with Export Directory name reading
+    -- Fallback: If no modules found, try to find them via MZ header scan with export-directory name reading
     if #result == 0 then
-        local mzScan = AOBScan("4D 5A 90 00 03 00 00 00")  -- MZ PE header
-        if mzScan and mzScan.Count > 0 then
-            for i = 0, math.min(mzScan.Count - 1, 50) do
-                local addr = tonumber(mzScan.getString(i), 16)
-                if addr then
-                    local peOffset = readInteger(addr + 0x3C)
-                    local moduleSize = 0
-                    local realName = nil
-                    
-                    if peOffset and peOffset > 0 and peOffset < 0x1000 then
-                        -- Get Size of Image
-                        local sizeOfImage = readInteger(addr + peOffset + 0x50)
-                        if sizeOfImage then moduleSize = sizeOfImage end
-                        
-                        -- READ INTERNAL NAME FROM EXPORT DIRECTORY
-                        local exportRVA = readInteger(addr + peOffset + 0x78)
-                        if exportRVA and exportRVA > 0 and exportRVA < 0x10000000 then
-                            local nameRVA = readInteger(addr + exportRVA + 0x0C)
-                            if nameRVA and nameRVA > 0 and nameRVA < 0x10000000 then
-                                local name = readString(addr + nameRVA, 64)
-                                if name and #name > 0 and #name < 60 then
-                                    realName = name
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Determine module name
-                    local modName
-                    if realName then
-                        modName = realName
-                    elseif i == 0 then
-                        modName = (process ~= "" and process) or "L2.exe"
-                    else
-                        modName = "Module_" .. string.format("%X", addr)
-                    end
-                    
-                    table.insert(result, {
-                        name = modName,
-                        address = toHex(addr),
-                        size = moduleSize,
-                        is_64bit = false,
-                        path = "",
-                        source = realName and "export_directory" or "aob_fallback"
-                    })
-                end
-            end
-            mzScan.destroy()
+        local aobModules = aobScanPEModules(50)
+        for _, m in ipairs(aobModules) do
+            table.insert(result, {
+                name     = m.name,
+                address  = m.address,
+                size     = m.size,
+                is_64bit = m.is_64bit,
+                path     = m.path,
+                source   = m.source
+            })
         end
     end
     
     local fallback_used = #result > 0 and result[1] and result[1].source ~= nil
     local limit, offset, page, total = paginate(params, result, 100)
     return { success = true, total = total, offset = offset, limit = limit, returned = #page, modules = page, fallback_used = fallback_used }
+
+    -- If both enumModules and the AOB fallback failed to produce any modules, report failure honestly
+    if #result == 0 and (pid or 0) > 0 then
+        return {
+            success = false,
+            error = "Process attached but cannot enumerate modules (likely anti-cheat interference). Try enum_modules directly, or attach to a different process.",
+            error_code = "CE_API_UNAVAILABLE",
+            process_id = pid
+        }
+    end
+
+    return { success = true, modules = result, count = #result, fallback_used = #result > 0 and result[1] and result[1].source ~= nil }
 end
 
 local function cmd_get_symbol_address(params)
@@ -510,7 +495,7 @@ end
 
 local function cmd_read_memory(params)
     local addr = params.address
-    local size = math.min(params.size or 256, 65536)
+    local size = math.max(1, math.min(params.size or 256, 1048576))  -- 1 MB max
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -557,28 +542,99 @@ local function cmd_read_string(params)
     local addr = params.address
     local maxlen = params.max_length or 256
     local wide = params.wide or false
-    
+    -- encoding: "ascii" | "utf8" | "utf16le" | "raw" (default "utf8")
+    -- Backward compat: wide=true maps to utf16le unless encoding is explicitly set
+    local encoding = params.encoding or (wide and "utf16le" or "utf8")
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
-    
-    local str = readString(addr, maxlen, wide)
-    
-    -- Sanitize non-printable characters for JSON compatibility
-    local sanitized = ""
-    if str then
-        for i = 1, #str do
-            local byte = str:byte(i)
-            if byte >= 32 and byte < 127 then
-                sanitized = sanitized .. str:sub(i, i)
-            elseif byte == 9 or byte == 10 or byte == 13 then
-                sanitized = sanitized .. " "  -- Replace tabs/newlines with space
-            else
-                sanitized = sanitized .. string.format("\\x%02X", byte)
+
+    local parts = {}
+    local rawLen = 0
+
+    if encoding == "utf16le" then
+        local str = readString(addr, maxlen, true)
+        rawLen = str and #str or 0
+        if str then
+            for i = 1, #str do
+                local byte = str:byte(i)
+                if byte >= 32 and byte < 127 then
+                    parts[#parts + 1] = str:sub(i, i)
+                elseif byte == 9 or byte == 10 or byte == 13 then
+                    parts[#parts + 1] = str:sub(i, i)
+                else
+                    parts[#parts + 1] = string.format("\\x%02X", byte)
+                end
+            end
+        end
+    elseif encoding == "raw" then
+        local bytes = readBytes(addr, maxlen, true)
+        rawLen = bytes and #bytes or 0
+        if bytes then
+            for i, b in ipairs(bytes) do parts[i] = string.format("%02X", b) end
+        end
+        return { success = true, address = toHex(addr), value = table.concat(parts, " "), encoding = encoding, wide = false, length = rawLen, raw_length = rawLen }
+    elseif encoding == "ascii" then
+        local str = readString(addr, maxlen, false)
+        rawLen = str and #str or 0
+        if str then
+            for i = 1, #str do
+                local byte = str:byte(i)
+                if byte >= 32 and byte < 127 then
+                    parts[#parts + 1] = str:sub(i, i)
+                elseif byte == 9 or byte == 10 or byte == 13 then
+                    parts[#parts + 1] = " "
+                else
+                    parts[#parts + 1] = string.format("\\x%02X", byte)
+                end
+            end
+        end
+    else
+        -- utf8 (default): preserve valid UTF-8 multi-byte sequences; strip C0 controls
+        local str = readString(addr, maxlen, false)
+        rawLen = str and #str or 0
+        if str then
+            local i = 1
+            while i <= #str do
+                local byte = str:byte(i)
+                if byte >= 0x80 then
+                    local seqLen
+                    if byte >= 0xF0 then seqLen = 4
+                    elseif byte >= 0xE0 then seqLen = 3
+                    elseif byte >= 0xC0 then seqLen = 2
+                    else seqLen = 1 end  -- 0x80-0xBF: orphan continuation byte
+                    if seqLen > 1 and i + seqLen - 1 <= #str then
+                        local valid = true
+                        for j = i + 1, i + seqLen - 1 do
+                            local cb = str:byte(j)
+                            if cb < 0x80 or cb > 0xBF then valid = false; break end
+                        end
+                        if valid then
+                            parts[#parts + 1] = str:sub(i, i + seqLen - 1)
+                            i = i + seqLen
+                        else
+                            parts[#parts + 1] = string.format("\\x%02X", byte)
+                            i = i + 1
+                        end
+                    else
+                        parts[#parts + 1] = string.format("\\x%02X", byte)
+                        i = i + 1
+                    end
+                elseif byte == 9 or byte == 10 or byte == 13 then
+                    parts[#parts + 1] = str:sub(i, i)
+                    i = i + 1
+                elseif byte >= 0x20 and byte < 0x80 then
+                    parts[#parts + 1] = str:sub(i, i)
+                    i = i + 1
+                else
+                    i = i + 1  -- strip C0 control bytes
+                end
             end
         end
     end
-    
-    return { success = true, address = toHex(addr), value = sanitized, wide = wide, length = str and #str or 0, raw_length = #sanitized }
+
+    local sanitized = table.concat(parts)
+    return { success = true, address = toHex(addr), value = sanitized, encoding = encoding, wide = (encoding == "utf16le"), length = rawLen, raw_length = #sanitized }
 end
 
 local function cmd_read_pointer(params)
@@ -665,9 +721,18 @@ local function cmd_scan_all(params)
     fl.initialize()
     local count = fl.getCount()
     
+    if serverState.scan_foundlist then
+        pcall(function() serverState.scan_foundlist.destroy() end)
+        serverState.scan_foundlist = nil
+    end
+    if serverState.scan_memscan then
+        pcall(function() serverState.scan_memscan.destroy() end)
+        serverState.scan_memscan = nil
+    end
+
     serverState.scan_memscan = ms
     serverState.scan_foundlist = fl
-    
+
     return { success = true, count = count }
 end
 
@@ -745,10 +810,24 @@ local function cmd_write_integer(params)
     local addr = params.address
     local value = params.value
     local vtype = params.type or "dword"
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
-    
+
+    if vtype == "byte" then
+        if type(value) ~= "number" or value < 0 or value > 0xFF then
+            return { success = false, error = "Value too large for type", error_code = "INVALID_PARAMS" }
+        end
+    elseif vtype == "word" or vtype == "2bytes" then
+        if type(value) ~= "number" or value < 0 or value > 0xFFFF then
+            return { success = false, error = "Value too large for type", error_code = "INVALID_PARAMS" }
+        end
+    elseif vtype == "dword" or vtype == "4bytes" then
+        if type(value) ~= "number" or value < 0 or value > 0xFFFFFFFF then
+            return { success = false, error = "Value too large for type", error_code = "INVALID_PARAMS" }
+        end
+    end
+
     local ok, err
     if vtype == "byte" then
         ok, err = pcall(writeByte, addr, value)
@@ -765,11 +844,11 @@ local function cmd_write_integer(params)
     else
         return { success = false, error = "Unknown type: " .. tostring(vtype) }
     end
-    
+
     if not ok then
         return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
     end
-    
+
     return { success = true, address = toHex(addr), value = value, type = vtype }
 end
 
@@ -816,6 +895,7 @@ end
 local function cmd_disassemble(params)
     local addr = params.address
     local count = params.count or 20
+    local count = math.max(1, math.min(params.count or 20, 1000))
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -1138,6 +1218,21 @@ end
 -- COMMAND HANDLERS - BREAKPOINTS
 -- ============================================================================
 
+-- Clears any hw_bp_slots entry (and its tracking tables) whose address matches
+-- addr, so the slot is available for re-use without leaking the old entry.
+local function clearGhostBpSlot(addr)
+    for i = 1, 4 do
+        if serverState.hw_bp_slots[i] and serverState.hw_bp_slots[i].address == addr then
+            local oldId = serverState.hw_bp_slots[i].id
+            serverState.hw_bp_slots[i] = nil
+            if oldId then
+                serverState.breakpoints[oldId] = nil
+                serverState.breakpoint_hits[oldId] = nil
+            end
+        end
+    end
+end
+
 local function cmd_set_breakpoint(params)
     local addr = params.address
     local bpId = params.id
@@ -1147,9 +1242,17 @@ local function cmd_set_breakpoint(params)
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
-    
+
     bpId = bpId or tostring(addr)
-    
+    -- Avoid collision if an existing breakpoint has the same ID
+    if serverState.breakpoints[bpId] then
+        local suffix = 2
+        while serverState.breakpoints[bpId .. "_" .. suffix] do suffix = suffix + 1 end
+        bpId = bpId .. "_" .. suffix
+    end
+
+    clearGhostBpSlot(addr)
+
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
     for i = 1, 4 do
@@ -1158,14 +1261,14 @@ local function cmd_set_breakpoint(params)
             break
         end
     end
-    
+
     if not slot then
         return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
     end
-    
+
     -- Remove existing breakpoint at this address
     pcall(function() debug_removeBreakpoint(addr) end)
-    
+
     serverState.breakpoint_hits[bpId] = {}
     
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
@@ -1204,9 +1307,17 @@ local function cmd_set_data_breakpoint(params)
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
-    
+
     bpId = bpId or tostring(addr)
-    
+    -- Avoid collision if an existing breakpoint has the same ID
+    if serverState.breakpoints[bpId] then
+        local suffix = 2
+        while serverState.breakpoints[bpId .. "_" .. suffix] do suffix = suffix + 1 end
+        bpId = bpId .. "_" .. suffix
+    end
+
+    clearGhostBpSlot(addr)
+
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
     for i = 1, 4 do
@@ -1215,11 +1326,11 @@ local function cmd_set_data_breakpoint(params)
             break
         end
     end
-    
+
     if not slot then
         return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
     end
-    
+
     local bpType = bptWrite
     if accessType == "r" then bpType = bptAccess
     elseif accessType == "rw" then bpType = bptAccess end
@@ -1327,7 +1438,7 @@ local function cmd_evaluate_lua(params)
     local code = params.code
     if not code then return { success = false, error = "No code provided" } end
     
-    local fn, err = loadstring(code)
+    local fn, err = load(code, "mcp_evaluate_lua", "t")
     if not fn then return { success = false, error = "Compile error: " .. tostring(err) } end
     
     local ok, result = pcall(fn)
@@ -1925,7 +2036,7 @@ end
 -- This is CRITICAL for continuous packet monitoring - logs can be polled repeatedly
 local function cmd_poll_dbvm_watch(params)
     local addr = params.address
-    local clear = params.clear or true  -- Default to clearing logs after poll
+    local clear = (params.clear ~= false)  -- nil→true, false→false, true→true
     local max_results = params.max_results or 1000
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1957,22 +2068,26 @@ local function cmd_poll_dbvm_watch(params)
             local hitData = {
                 hit_number = i,
                 -- 32-bit game uses ESP, 64-bit uses RSP
-                ESP = entry.RSP and (entry.RSP % 0x100000000) or nil,  -- Lower 32 bits for 32-bit game
+                ESP = entry.RSP and toHexLow32(entry.RSP) or nil,
                 RSP = entry.RSP and toHex(entry.RSP) or nil,
-                EIP = entry.RIP and (entry.RIP % 0x100000000) or nil,  -- Lower 32 bits
+                EIP = entry.RIP and toHexLow32(entry.RIP) or nil,
                 RIP = entry.RIP and toHex(entry.RIP) or nil,
                 -- Include key registers that might hold packet buffer
-                EAX = entry.RAX and (entry.RAX % 0x100000000) or nil,
-                ECX = entry.RCX and (entry.RCX % 0x100000000) or nil,
-                EDX = entry.RDX and (entry.RDX % 0x100000000) or nil,
-                EBX = entry.RBX and (entry.RBX % 0x100000000) or nil,
-                ESI = entry.RSI and (entry.RSI % 0x100000000) or nil,
-                EDI = entry.RDI and (entry.RDI % 0x100000000) or nil,
+                EAX = entry.RAX and toHexLow32(entry.RAX) or nil,
+                ECX = entry.RCX and toHexLow32(entry.RCX) or nil,
+                EDX = entry.RDX and toHexLow32(entry.RDX) or nil,
+                EBX = entry.RBX and toHexLow32(entry.RBX) or nil,
+                ESI = entry.RSI and toHexLow32(entry.RSI) or nil,
+                EDI = entry.RDI and toHexLow32(entry.RDI) or nil,
             }
             table.insert(results, hitData)
         end
     end
-    
+
+    if clear then
+        pcall(dbvm_watch_clearlog, watch_id)
+    end
+
     local uptime = os.time() - (watchInfo.start_time or os.time())
     
     return {
@@ -2210,7 +2325,7 @@ local function PipeWorker(thread)
                     local len = lenBytes[1] + (lenBytes[2] * 256) + (lenBytes[3] * 65536) + (lenBytes[4] * 16777216)
                     
                     -- Sanity check length
-                    if len > 0 and len < 100 * 1024 * 1024 then
+                    if len > 0 and len < 32 * 1024 * 1024 then
                         local payload = pipe.readString(len)
                         
                         if payload then

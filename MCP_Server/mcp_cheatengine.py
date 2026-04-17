@@ -190,7 +190,7 @@ class CEBridgeClient:
                     
                 resp_len = struct.unpack('<I', resp_header_buffer)[0]
                 
-                if resp_len > 16 * 1024 * 1024: 
+                if resp_len > 32 * 1024 * 1024:
                     self.close()
                     raise ConnectionError(f"Response too large: {resp_len} bytes")
 
@@ -301,9 +301,24 @@ def read_integer(address: str, type: str = "dword") -> str:
     return format_result(ce_client.send_command("read_integer", {"address": address, "type": type}))
 
 @mcp.tool()
-def read_string(address: str, max_length: int = 256, wide: bool = False) -> str:
-    """Read a string from memory (ASCII or Wide/UTF-16)."""
-    return format_result(ce_client.send_command("read_string", {"address": address, "max_length": max_length, "wide": wide}))
+def read_string(address: str, max_length: int = 256, wide: bool = False, encoding: str = "utf8") -> str:
+    """Read a string from memory.
+
+    Args:
+        address: Memory address to read from.
+        max_length: Maximum number of bytes to read.
+        wide: Legacy flag — when True, overrides encoding to 'utf16le' for backward compat.
+        encoding: One of 'ascii', 'utf8' (default), 'utf16le', or 'raw'.
+                  'ascii': strip non-printable bytes.
+                  'utf8': preserve valid UTF-8 multi-byte sequences.
+                  'utf16le': read as wide (UTF-16 LE) string.
+                  'raw': return bytes as a hex string (e.g. '48 65 6C 6C 6F').
+
+    Returns JSON with: success, address, value, encoding, wide, length, raw_length.
+    """
+    # Backward compat: wide=True maps to utf16le unless caller also set encoding explicitly
+    resolved_encoding = "utf16le" if wide else encoding
+    return format_result(ce_client.send_command("read_string", {"address": address, "max_length": max_length, "wide": wide, "encoding": resolved_encoding}))
 
 @mcp.tool()
 def read_pointer(address: str, offsets: list[int] = None) -> str:
