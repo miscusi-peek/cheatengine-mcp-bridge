@@ -171,10 +171,15 @@ local function cleanupZombieState()
     serverState.active_watches = {}
     
     if cleaned.breakpoints > 0 or cleaned.dbvm_watches > 0 or cleaned.scans > 0 then
-        log(string.format("Cleaned: %d breakpoints, %d DBVM watches, %d scans", 
+        log(string.format("Cleaned: %d breakpoints, %d DBVM watches, %d scans",
             cleaned.breakpoints, cleaned.dbvm_watches, cleaned.scans))
     end
-    
+
+    -- Extension point (reserved for additive units 7-23):
+    -- If you add new long-lived resources to serverState (persistent scans,
+    -- custom symbols, injected code caves, etc.), register their cleanup here
+    -- so script reload doesn't leak them.
+
     return cleaned
 end
 
@@ -645,9 +650,18 @@ local function cmd_scan_all(params)
     fl.initialize()
     local count = fl.getCount()
     
+    if serverState.scan_foundlist then
+        pcall(function() serverState.scan_foundlist.destroy() end)
+        serverState.scan_foundlist = nil
+    end
+    if serverState.scan_memscan then
+        pcall(function() serverState.scan_memscan.destroy() end)
+        serverState.scan_memscan = nil
+    end
+
     serverState.scan_memscan = ms
     serverState.scan_foundlist = fl
-    
+
     return { success = true, count = count }
 end
 
@@ -1114,6 +1128,21 @@ end
 -- COMMAND HANDLERS - BREAKPOINTS
 -- ============================================================================
 
+-- Clears any hw_bp_slots entry (and its tracking tables) whose address matches
+-- addr, so the slot is available for re-use without leaking the old entry.
+local function clearGhostBpSlot(addr)
+    for i = 1, 4 do
+        if serverState.hw_bp_slots[i] and serverState.hw_bp_slots[i].address == addr then
+            local oldId = serverState.hw_bp_slots[i].id
+            serverState.hw_bp_slots[i] = nil
+            if oldId then
+                serverState.breakpoints[oldId] = nil
+                serverState.breakpoint_hits[oldId] = nil
+            end
+        end
+    end
+end
+
 local function cmd_set_breakpoint(params)
     local addr = params.address
     local bpId = params.id
@@ -1125,7 +1154,9 @@ local function cmd_set_breakpoint(params)
     if not addr then return { success = false, error = "Invalid address" } end
     
     bpId = bpId or tostring(addr)
-    
+
+    clearGhostBpSlot(addr)
+
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
     for i = 1, 4 do
@@ -1134,14 +1165,14 @@ local function cmd_set_breakpoint(params)
             break
         end
     end
-    
+
     if not slot then
         return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
     end
-    
+
     -- Remove existing breakpoint at this address
     pcall(function() debug_removeBreakpoint(addr) end)
-    
+
     serverState.breakpoint_hits[bpId] = {}
     
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
@@ -1182,7 +1213,9 @@ local function cmd_set_data_breakpoint(params)
     if not addr then return { success = false, error = "Invalid address" } end
     
     bpId = bpId or tostring(addr)
-    
+
+    clearGhostBpSlot(addr)
+
     -- Find free hardware slot (max 4 debug registers)
     local slot = nil
     for i = 1, 4 do
@@ -1191,11 +1224,11 @@ local function cmd_set_data_breakpoint(params)
             break
         end
     end
-    
+
     if not slot then
         return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
     end
-    
+
     local bpType = bptWrite
     if accessType == "r" then bpType = bptAccess
     elseif accessType == "rw" then bpType = bptAccess end
@@ -1919,7 +1952,7 @@ end
 -- This is CRITICAL for continuous packet monitoring - logs can be polled repeatedly
 local function cmd_poll_dbvm_watch(params)
     local addr = params.address
-    local clear = params.clear or true  -- Default to clearing logs after poll
+    local clear = (params.clear ~= false)  -- nil→true, false→false, true→true
     local max_results = params.max_results or 1000
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1966,7 +1999,11 @@ local function cmd_poll_dbvm_watch(params)
             table.insert(results, hitData)
         end
     end
-    
+
+    if clear then
+        pcall(dbvm_watch_clearlog, watch_id)
+    end
+
     local uptime = os.time() - (watchInfo.start_time or os.time())
     
     return {
