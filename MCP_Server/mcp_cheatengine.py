@@ -569,6 +569,195 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- CODE INJECTION & EXECUTION ---
+
+@mcp.tool()
+def inject_dll(filepath: str, skip_symbol_reload: bool = False) -> str:
+    """Inject a DLL into the currently attached target process.
+
+    Security warning: Executes arbitrary code in the target process. Use with caution.
+
+    Args:
+        filepath: Absolute path to the DLL or dylib to inject.
+        skip_symbol_reload: If True, skips waiting for symbol reload after injection.
+
+    Returns:
+        JSON with {success}.
+    """
+    return format_result(ce_client.send_command("inject_dll", {
+        "filepath": filepath,
+        "skip_symbol_reload": skip_symbol_reload,
+    }))
+
+@mcp.tool()
+def inject_dotnet_dll(
+    filepath: str,
+    class_name: str,
+    method_name: str,
+    param: str = "",
+    timeout: int = -1,
+) -> str:
+    """Inject a .NET DLL and invoke a static method in the target process.
+
+    Security warning: Executes arbitrary code in the target process. Use with caution.
+
+    The method must be declared as: public static int MethodName(string parameters).
+
+    Args:
+        filepath: Absolute path to the managed (.NET) DLL.
+        class_name: Fully-qualified class name (e.g. 'MyNamespace.MyClass').
+        method_name: Name of the static method to call.
+        param: String parameter passed to the method.
+        timeout: Milliseconds to wait for return (-1 = wait indefinitely).
+
+    Returns:
+        JSON with {success, result} where result is the integer return value.
+    """
+    return format_result(ce_client.send_command("inject_dotnet_dll", {
+        "filepath":    filepath,
+        "class_name":  class_name,
+        "method_name": method_name,
+        "param":       param,
+        "timeout":     timeout,
+    }))
+
+@mcp.tool()
+def execute_code(address: str, param: int = 0, timeout: int = -1) -> str:
+    """Call a stdcall function with one argument at the given address in the target process.
+
+    Security warning: Executes arbitrary code in the target process. Use with caution.
+
+    Args:
+        address: Address (hex string or symbol) of the function to call.
+        param: Integer argument passed as the single parameter.
+        timeout: Milliseconds to wait (-1 = indefinitely).
+
+    Returns:
+        JSON with {success, return_value}.
+    """
+    return format_result(ce_client.send_command("execute_code", {
+        "address": address,
+        "param":   param,
+        "timeout": timeout,
+    }))
+
+@mcp.tool()
+def execute_code_ex(
+    call_method: int,
+    timeout: int,
+    address: str,
+    args: list = None,
+) -> str:
+    """Call a function with an explicit calling convention and multiple arguments.
+
+    Security warning: Executes arbitrary code in the target process. Use with caution.
+
+    call_method values:
+        0 = stdcall
+        1 = cdecl
+        2 = thiscall
+        3 = fastcall
+
+    Args:
+        call_method: Integer calling convention identifier.
+        timeout: Milliseconds to wait (-1 = indefinitely, 0 = fire-and-forget).
+        address: Address (hex string or symbol) of the function to call.
+        args: List of arguments. Each element can be a raw value (CE guesses type)
+              or a dict with keys 'type' and 'value'.
+
+    Returns:
+        JSON with {success, return_value}.
+    """
+    return format_result(ce_client.send_command("execute_code_ex", {
+        "call_method": call_method,
+        "timeout":     timeout,
+        "address":     address,
+        "args":        args or [],
+    }))
+
+@mcp.tool()
+def execute_method(
+    address: str,
+    instance: str,
+    args: list = None,
+    call_method: int = 0,
+    timeout: int = -1,
+) -> str:
+    """Call a C++ instance method with an implicit 'this' pointer in the target process.
+
+    Security warning: Executes arbitrary code in the target process. Use with caution.
+
+    The instance pointer is placed into the register selected by call_method (ECX by default
+    for thiscall). If instance is None the call behaves like execute_code_ex.
+
+    Args:
+        address: Address (hex string or symbol) of the method to call.
+        instance: Address of the object instance ('this' pointer).
+        args: List of additional arguments passed after 'this'.
+        call_method: Calling convention (0=stdcall, 1=cdecl, 2=thiscall, 3=fastcall).
+        timeout: Milliseconds to wait (-1 = indefinitely).
+
+    Returns:
+        JSON with {success, return_value}.
+    """
+    return format_result(ce_client.send_command("execute_method", {
+        "address":     address,
+        "instance":    instance,
+        "args":        args or [],
+        "call_method": call_method,
+        "timeout":     timeout,
+    }))
+
+@mcp.tool()
+def execute_code_local(address: str, param: int = 0) -> str:
+    """Call a stdcall function inside Cheat Engine's own process (NOT the target).
+
+    Security warning: Executes arbitrary code in the CE process. Use with caution.
+
+    Useful for calling CE internal helpers or code loaded into CE itself.
+
+    Args:
+        address: Address within CE's memory space to call.
+        param: Integer argument passed as the single parameter.
+
+    Returns:
+        JSON with {success, return_value}.
+    """
+    return format_result(ce_client.send_command("execute_code_local", {
+        "address": address,
+        "param":   param,
+    }))
+
+@mcp.tool()
+def execute_code_local_ex(
+    address: str,
+    args: list = None,
+    call_method: int = 0,
+) -> str:
+    """Call a function inside Cheat Engine's own process with explicit calling convention.
+
+    Security warning: Executes arbitrary code in the CE process. Use with caution.
+
+    call_method values:
+        0 = stdcall
+        1 = cdecl
+        2 = thiscall
+        3 = fastcall
+
+    Args:
+        address: Address within CE's memory space to call.
+        args: List of arguments passed to the function.
+        call_method: Integer calling convention identifier.
+
+    Returns:
+        JSON with {success, return_value}.
+    """
+    return format_result(ce_client.send_command("execute_code_local_ex", {
+        "address":     address,
+        "args":        args or [],
+        "call_method": call_method,
+    }))
+
 # >>> BEGIN UNIT-08 Memory Allocation <<<
 
 @mcp.tool()
