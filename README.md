@@ -100,7 +100,7 @@ pip install mcp pywin32
 1. Enable DBVM in CheatEngine.
 2. File → Execute Script → Open ce_mcp_bridge.lua → Execute
 ```
-Look for: `[MCP v12.0.0] Server started on \\.\pipe\CE_MCP_Bridge_v99`
+Look for: `[MCP v12.0.0] MCP Server Listening on: CE_MCP_Bridge_v99`
 
 ### 2. Configure MCP Client
 Add to your MCP configuration (e.g., `mcp_config.json`):

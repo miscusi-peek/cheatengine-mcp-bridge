@@ -14,7 +14,6 @@ This test suite is designed to give 100% confidence in MCP bridge reliability.
 """
 
 import win32file
-import win32pipe
 import struct
 import json
 import time
@@ -22,6 +21,8 @@ import sys
 from typing import Optional, Dict, Any, Tuple, List, Callable
 
 PIPE_NAME = r"\\.\pipe\CE_MCP_Bridge_v99"
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+EXPECTED_VERSION_PREFIX = "12."
 
 class TestResult:
     PASSED = "PASSED"
@@ -49,6 +50,9 @@ class MCPTestClient:
             return False
     
     def send_command(self, method: str, params: Optional[dict] = None) -> dict:
+        if not self.handle:
+            raise RuntimeError("Not connected to MCP bridge")
+
         if params is None:
             params = {}
         
@@ -62,17 +66,30 @@ class MCPTestClient:
         
         data = json.dumps(request).encode('utf-8')
         header = struct.pack('<I', len(data))
-        win32file.WriteFile(self.handle, header + data)
+        win32file.WriteFile(self.handle, header)
+        win32file.WriteFile(self.handle, data)
         
         _, resp_header = win32file.ReadFile(self.handle, 4)
+        if len(resp_header) < 4:
+            raise RuntimeError("Incomplete response header from bridge")
+
         resp_len = struct.unpack('<I', resp_header)[0]
+        if resp_len <= 0 or resp_len > MAX_RESPONSE_BYTES:
+            raise RuntimeError(f"Invalid response length: {resp_len}")
+
         _, resp_data = win32file.ReadFile(self.handle, resp_len)
-        
-        return json.loads(resp_data.decode('utf-8'))
+        if len(resp_data) < resp_len:
+            raise RuntimeError(f"Incomplete response body: expected {resp_len}, got {len(resp_data)}")
+
+        try:
+            return json.loads(resp_data.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Invalid JSON response: {e}") from e
     
     def close(self):
         if self.handle:
             win32file.CloseHandle(self.handle)
+            self.handle = None
 
 
 # ============================================================================
@@ -317,6 +334,7 @@ def main():
         sys.exit(1)
     
     all_tests: Dict[str, TestCase] = {}
+    allocated_regions: List[int] = []
     
     # =========================================================================
     # CATEGORY 1: Basic & Utility Commands
@@ -331,7 +349,7 @@ def main():
             has_field("success", bool),
             field_equals("success", True),
             has_field("version", str),
-            version_check("11.4"),
+            version_check(EXPECTED_VERSION_PREFIX),
             has_field("message", str),
             has_field("timestamp", int),
         ]
@@ -567,6 +585,39 @@ def main():
         # Fallback - just use module base + some offset
         entry_point = module_base + 0x1000
         print(f"[Using fallback code address {hex(entry_point)}]")
+
+    # Build a deterministic pointer-chain fixture in target memory.
+    # This avoids flaky failures when using arbitrary module addresses as pointers.
+    pointer_chain_base = None
+    pointer_chain_setup_error = "pointer-chain setup not attempted"
+    if module_base:
+        try:
+            alloc_chain_resp = client.send_command(
+                "evaluate_lua",
+                {"code": "return string.format('0x%X', allocateMemory(16))"},
+            )
+            alloc_chain_hex = alloc_chain_resp.get("result", {}).get("result", "")
+            if alloc_chain_hex.startswith(("0x", "0X")):
+                pointer_chain_base = int(alloc_chain_hex, 16)
+                allocated_regions.append(pointer_chain_base)
+
+                pointer_chain_target = pointer_chain_base + (8 if is_64bit else 4)
+                pointer_type = "qword" if is_64bit else "dword"
+                write_ptr_resp = client.send_command(
+                    "write_integer",
+                    {
+                        "address": hex(pointer_chain_base),
+                        "value": pointer_chain_target,
+                        "type": pointer_type,
+                    },
+                )
+                if not write_ptr_resp.get("result", {}).get("success"):
+                    pointer_chain_setup_error = write_ptr_resp.get("result", {}).get("error", "write_integer failed")
+                    pointer_chain_base = None
+            else:
+                pointer_chain_setup_error = "allocateMemory did not return a hex address"
+        except Exception as e:
+            pointer_chain_setup_error = str(e)
     
     all_tests["disassemble"] = TestCase(
         "Disassemble (5 instructions from entry point)", "disassemble",
@@ -633,7 +684,8 @@ def main():
             has_field("success", bool),
             arch_is_valid(),
             has_field("references", list),
-            has_field("count", int),
+            has_field("total", int),
+            has_field("returned", int),
         ]
     )
     
@@ -688,7 +740,8 @@ def main():
         "Enumerate Modules", "enum_modules",
         validators=[
             has_field("success", bool),
-            has_field("count", int),
+            has_field("total", int),
+            has_field("returned", int),
             has_field("modules", list),
             # Should have at least 1 module if process is attached
         ]
@@ -738,7 +791,8 @@ def main():
         validators=[
             has_field("success", bool),
             has_field("regions", list),
-            has_field("count", int),
+            has_field("total", int),
+            has_field("returned", int),
         ]
     )
     
@@ -754,14 +808,15 @@ def main():
     
     all_tests["read_pointer_chain"] = TestCase(
         "Read Pointer Chain", "read_pointer_chain",
-        params={"base": hex(module_base), "offsets": [0x3C]},
+        params={"base": hex(pointer_chain_base) if pointer_chain_base else hex(module_base), "offsets": [0]},
         validators=[
             has_field("success", bool),
             has_field("base", str),
             has_field("chain", list),
             has_field("final_address", str),
             field_is_hex_address("final_address"),
-        ]
+        ],
+        skip_reason=None if pointer_chain_base else f"Pointer-chain setup failed: {pointer_chain_setup_error}"
     )
     
     all_tests["auto_assemble"] = TestCase(
@@ -931,6 +986,7 @@ def main():
             if _alloc_val.startswith("0x") or _alloc_val.startswith("0X"):
                 try:
                     _scratch_addr = int(_alloc_val, 16)
+                    allocated_regions.append(_scratch_addr)
                 except ValueError:
                     pass
 
@@ -1211,7 +1267,7 @@ def main():
         # Re-scan to ensure fresh results in the foundlist (gated on process).
         _page_total = 0
         if _proc_ok:
-            _page_scan_resp = client.send_command("scan_all", {"value": "1", "type": "exact"})
+            _page_scan_resp = client.send_command("scan_all", {"value": "1", "type": "dword"})
             _page_total = _page_scan_resp.get("result", {}).get("count", 0)
         _page_skip = None if (_proc_ok and _page_total >= 10) else "Fewer than 10 scan results — pagination not meaningful"
 
@@ -1507,6 +1563,19 @@ def main():
 
     # >>> END UNIT-24 <<<
 
+    if allocated_regions:
+        print("\n[CLEANUP] Releasing allocated test regions...")
+        for addr in sorted(set(allocated_regions)):
+            try:
+                cleanup_resp = client.send_command("free_memory", {"address": hex(addr)})
+                if cleanup_resp.get("result", {}).get("success"):
+                    print(f"  ✓ freed {hex(addr)}")
+                else:
+                    msg = cleanup_resp.get("result", {}).get("error", "unknown error")
+                    print(f"  ! failed to free {hex(addr)}: {msg}")
+            except Exception as e:
+                print(f"  ! failed to free {hex(addr)}: {e}")
+
     # Update summary categories to include Unit-24 tests.
     _u24_write_keys = [
         "u24_write_integer", "u24_write_integer_readback",
@@ -1583,7 +1652,9 @@ def main():
     
     print(f"\n{'='*70}")
     print(f"TOTAL: {passed} passed, {failed} failed, {skipped} skipped (of {total})")
-    print(f"PASS RATE: {100*passed//(total-skipped)}% (excluding skipped)")
+    effective_total = total - skipped
+    pass_rate = (100 * passed // effective_total) if effective_total > 0 else 0
+    print(f"PASS RATE: {pass_rate}% (excluding skipped)")
     print(f"{'='*70}")
     
     if failed == 0:

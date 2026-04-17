@@ -89,6 +89,8 @@ sys.stdout = sys.stderr
 import json
 import struct
 import time
+import math
+import threading
 import traceback
 
 try:
@@ -129,9 +131,28 @@ def format_result(result):
 # CONFIGURATION
 # ============================================================================
 
-# V11 Bridge uses 'CE_MCP_Bridge_v99'
+# Bridge wire protocol endpoint
 PIPE_NAME = r"\\.\pipe\CE_MCP_Bridge_v99"
 MCP_SERVER_NAME = "cheatengine"
+MAX_RESPONSE_SIZE_BYTES = 32 * 1024 * 1024
+
+
+def _parse_timeout_seconds(raw_value):
+    """Parse CE_MCP_TIMEOUT seconds; <=0 disables timeout."""
+    if raw_value is None:
+        return 30.0
+    try:
+        timeout = float(raw_value)
+    except (TypeError, ValueError):
+        return 30.0
+    if not math.isfinite(timeout):
+        return 30.0
+    if timeout <= 0:
+        return None
+    return timeout
+
+
+CE_MCP_TIMEOUT_SECONDS = _parse_timeout_seconds(os.environ.get("CE_MCP_TIMEOUT"))
 
 # ============================================================================
 # PIPE CLIENT
@@ -140,6 +161,7 @@ MCP_SERVER_NAME = "cheatengine"
 class CEBridgeClient:
     def __init__(self):
         self.handle = None
+        self.timeout_seconds = CE_MCP_TIMEOUT_SECONDS
 
     def connect(self):
         """Attempts to connect to the CE Named Pipe."""
@@ -158,6 +180,56 @@ class CEBridgeClient:
             # sys.stderr.write(f"[CEBridge] Connect Error: {e}\n")
             return False
 
+    def _exchange_once(self, req_json):
+        """Send one framed request and parse one framed response."""
+        header = struct.pack('<I', len(req_json))
+        win32file.WriteFile(self.handle, header)
+        win32file.WriteFile(self.handle, req_json)
+
+        resp_header_buffer = win32file.ReadFile(self.handle, 4)[1]
+        if len(resp_header_buffer) < 4:
+            raise ConnectionError("Incomplete response header from CE.")
+
+        resp_len = struct.unpack('<I', resp_header_buffer)[0]
+        if resp_len > MAX_RESPONSE_SIZE_BYTES:
+            raise ConnectionError(f"Response too large: {resp_len} bytes")
+
+        resp_body_buffer = win32file.ReadFile(self.handle, resp_len)[1]
+        try:
+            return json.loads(resp_body_buffer.decode('utf-8'))
+        except json.JSONDecodeError as exc:
+            raise ConnectionError("Invalid JSON received from CE") from exc
+
+    def _exchange_with_timeout(self, req_json, method):
+        """Run exchange with optional CE_MCP_TIMEOUT enforcement."""
+        timeout = self.timeout_seconds
+        if timeout is None:
+            return self._exchange_once(req_json)
+
+        result_holder = {}
+        error_holder = {}
+
+        def _worker():
+            try:
+                result_holder["response"] = self._exchange_once(req_json)
+            except Exception as exc:
+                error_holder["error"] = exc
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+        worker.join(timeout)
+
+        if worker.is_alive():
+            self.close()
+            raise TimeoutError(
+                f"Command '{method}' timed out after {timeout:g}s (CE_MCP_TIMEOUT)."
+            )
+
+        if "error" in error_holder:
+            raise error_holder["error"]
+
+        return result_holder["response"]
+
     def send_command(self, method, params=None):
         """Send command to CE Bridge with auto-reconnection on failure."""
         max_retries = 2
@@ -166,7 +238,7 @@ class CEBridgeClient:
         for attempt in range(max_retries):
             if not self.handle:
                 if not self.connect():
-                    raise ConnectionError("Cheat Engine Bridge (v11/v99) is not running (Pipe not found).")
+                    raise ConnectionError("Cheat Engine Bridge (v12/v99) is not running (Pipe not found).")
 
             request = {
                 "jsonrpc": "2.0",
@@ -177,31 +249,7 @@ class CEBridgeClient:
             
             try:
                 req_json = json.dumps(request).encode('utf-8')
-                header = struct.pack('<I', len(req_json))
-                
-                win32file.WriteFile(self.handle, header)
-                win32file.WriteFile(self.handle, req_json)
-                
-                resp_header_buffer = win32file.ReadFile(self.handle, 4)[1]
-                if len(resp_header_buffer) < 4:
-                    self.close()
-                    last_error = ConnectionError("Incomplete response header from CE.")
-                    continue  # Retry
-                    
-                resp_len = struct.unpack('<I', resp_header_buffer)[0]
-                
-                if resp_len > 32 * 1024 * 1024:
-                    self.close()
-                    raise ConnectionError(f"Response too large: {resp_len} bytes")
-
-                resp_body_buffer = win32file.ReadFile(self.handle, resp_len)[1]
-                
-                try:
-                    response = json.loads(resp_body_buffer.decode('utf-8'))
-                except json.JSONDecodeError:
-                    self.close()
-                    last_error = ConnectionError("Invalid JSON received from CE")
-                    continue  # Retry
+                response = self._exchange_with_timeout(req_json, method)
                 
                 if 'error' in response:
                     return {"success": False, "error": str(response['error'])}
@@ -210,9 +258,12 @@ class CEBridgeClient:
                     
                 return response
 
-            except pywintypes.error as e:
+            except (pywintypes.error, ConnectionError, TimeoutError) as e:
                 self.close()
-                last_error = ConnectionError(f"Pipe Communication failed: {e}")
+                if isinstance(e, pywintypes.error):
+                    last_error = ConnectionError(f"Pipe Communication failed: {e}")
+                else:
+                    last_error = e
                 if attempt < max_retries - 1:
                     continue  # Retry
         
@@ -232,7 +283,7 @@ class CEBridgeClient:
 ce_client = CEBridgeClient()
 
 # ============================================================================
-# MCP SERVER - v11 IMPLEMENTATION
+# MCP SERVER - v12 IMPLEMENTATION
 # ============================================================================
 
 mcp = FastMCP(MCP_SERVER_NAME)
@@ -323,7 +374,7 @@ def read_string(address: str, max_length: int = 256, wide: bool = False, encodin
 @mcp.tool()
 def read_pointer(address: str, offsets: list[int] = None) -> str:
     """Read a pointer chain. Returns the final address and value."""
-    # V11 supports 'read_pointer' command for simple dereference or 'read_pointer_chain' for multiple
+    # Bridge supports 'read_pointer' for single dereference or 'read_pointer_chain' for multiple
     if offsets:
         return format_result(ce_client.send_command("read_pointer_chain", {"base": address, "offsets": offsets}))
     else:
@@ -938,7 +989,7 @@ def run_command(command: str, args: str = "") -> str:
     return format_result(ce_client.send_command("run_command", {"command": command, "args": args}))
 
 @mcp.tool()
-def shell_execute(command: str, args: str = "", verb: str = "open", working_dir: str = "") -> str:
+def shell_execute(command: str, args: str = "", verb: str = "open", working_dir: str = "", showcommand: int = None) -> str:
     """Invoke Windows ShellExecute. SECURITY: Arbitrary code execution.
 
     REQUIRES environment variable CE_MCP_ALLOW_SHELL=1 at server startup.
@@ -946,17 +997,24 @@ def shell_execute(command: str, args: str = "", verb: str = "open", working_dir:
     Args:
         command: Command or file to execute.
         args: Arguments string.
-        verb: ShellExecute verb ("open", "edit", "print", "runas", etc.).
+        verb: ShellExecute verb. CE currently supports "open" only.
         working_dir: Working directory (empty for current).
+        showcommand: Optional Win32 show command integer.
 
     Returns JSON with: success.
     """
     blocked = _check_shell_gate()
     if blocked:
         return blocked
-    return format_result(ce_client.send_command("shell_execute", {
-        "command": command, "args": args, "verb": verb, "working_dir": working_dir
-    }))
+    params = {
+        "command": command,
+        "args": args,
+        "verb": verb,
+        "working_dir": working_dir,
+    }
+    if showcommand is not None:
+        params["showcommand"] = showcommand
+    return format_result(ce_client.send_command("shell_execute", params))
 # >>> END UNIT-20b <<<
 # >>> BEGIN UNIT-20a File IO Clipboard <<<
 
@@ -2071,7 +2129,7 @@ def get_opened_process_handle() -> str:
 
 if __name__ == "__main__":
     try:
-        debug_log("Starting FastMCP server (v11/v99 compatible)...")
+        debug_log("Starting FastMCP server (v12/v99 compatible)...")
         mcp.run()
     except Exception as e:
         debug_log(f"Fatal Crash: {e}")

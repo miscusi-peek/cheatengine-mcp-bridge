@@ -1,16 +1,9 @@
 -- ============================================================================
--- CHEATENGINE MCP BRIDGE v11.4 - FORTIFIED EDITION
--- ============================================================================
--- Combines timer-based pipe communication (v10) with complete command set (v8)
--- This is the PRODUCTION version with all tools for AI-powered reverse engineering
--- v11.4.0: Added robust cleanup on start/stop to prevent zombie breakpoints/watches
---          Ensures clean state on script reload even if resources are active
--- v11.3.1: Universal 32/64-bit handling, improved breakpoint capture, robust analysis
---          Fixed analyze_function, readPointer for pointer chains
+-- CHEATENGINE MCP BRIDGE v12.0.0
 -- ============================================================================
 
 local PIPE_NAME = "CE_MCP_Bridge_v99"
-local VERSION = "11.4.0"
+local VERSION = "12.0.0"
 
 -- Global State
 local serverState = {
@@ -409,8 +402,10 @@ local function decode_array(str, pos)
   pos = decode_scanwhite(str, pos)
   if str:sub(pos, pos) == "]" then return arr, pos + 1 end
   while true do
-    local val val, pos = decode(str, pos)
-    n = n + 1 arr[n] = val
+        local val
+        val, pos = decode(str, pos)
+        n = n + 1
+        arr[n] = val
     pos = decode_scanwhite(str, pos)
     local c = str:sub(pos, pos)
     if c == "]" then return arr, pos + 1 end
@@ -424,11 +419,15 @@ local function decode_object(str, pos)
   pos = decode_scanwhite(str, pos)
   if str:sub(pos, pos) == "}" then return obj, pos + 1 end
   while true do
-    local key key, pos = decode_string(str, pos) if not key then return nil, "expected string key" end
+        local key
+        key, pos = decode_string(str, pos)
+        if not key then return nil, "expected string key" end
     pos = decode_scanwhite(str, pos)
     if str:sub(pos, pos) ~= ":" then return nil, "expected ':'" end
     pos = decode_scanwhite(str, pos + 1)
-    local val val, pos = decode(str, pos) obj[key] = val
+        local val
+        val, pos = decode(str, pos)
+        obj[key] = val
     pos = decode_scanwhite(str, pos)
     local c = str:sub(pos, pos)
     if c == "}" then return obj, pos + 1 end
@@ -602,6 +601,9 @@ local function cmd_enum_modules(params)
                 is_64bit = false,
                 path = "",
                 source = m.source
+            })
+        end
+
         local aobModules = aobScanPEModules(50)
         for _, m in ipairs(aobModules) do
             table.insert(result, {
@@ -614,10 +616,6 @@ local function cmd_enum_modules(params)
             })
         end
     end
-    
-    local fallback_used = #result > 0 and result[1] and result[1].source ~= nil
-    local limit, offset, page, total = paginate(params, result, 100)
-    return { success = true, total = total, offset = offset, limit = limit, returned = #page, modules = page, fallback_used = fallback_used }
 
     -- If both enumModules and the AOB fallback failed to produce any modules, report failure honestly
     if #result == 0 and (pid or 0) > 0 then
@@ -628,8 +626,10 @@ local function cmd_enum_modules(params)
             process_id = pid
         }
     end
-
-    return { success = true, modules = result, count = #result, fallback_used = #result > 0 and result[1] and result[1].source ~= nil }
+    
+    local fallback_used = #result > 0 and result[1] and result[1].source ~= nil
+    local limit, offset, page, total = paginate(params, result, 100)
+    return { success = true, total = total, offset = offset, limit = limit, returned = #page, modules = page, fallback_used = fallback_used }
 end
 
 local function cmd_get_symbol_address(params)
@@ -2745,13 +2745,25 @@ end
 local function cmd_shell_execute(params)
     local command = params.command
     local args = params.args or ""
+    local verb = string.lower(params.verb or "open")
     local workingDir = params.working_dir or ""
+    local showCommand = params.showcommand
 
     if not command or command == "" then
         return { success = false, error = "No command provided" }
     end
 
-    local ok, err = pcall(shellExecute, command, args, workingDir ~= "" and workingDir or nil)
+    -- CE's shellExecute wrapper does not expose an explicit "verb" argument.
+    -- Keep compatibility explicit to avoid silent behavior differences.
+    if verb ~= "open" then
+        return { success = false, error = "Unsupported verb for shell_execute: " .. tostring(verb), error_code = "INVALID_PARAMS" }
+    end
+
+    if showCommand ~= nil and type(showCommand) ~= "number" then
+        return { success = false, error = "showcommand must be a number when provided", error_code = "INVALID_PARAMS" }
+    end
+
+    local ok, err = pcall(shellExecute, command, args, workingDir ~= "" and workingDir or nil, showCommand)
 
     if not ok then
         return { success = false, error = "shellExecute failed: " .. tostring(err) }
@@ -3003,6 +3015,8 @@ local function cmd_delete_structure(params)
     pcall(function() structure.destroy() end)
 
     serverState.structures[params.structure_id] = nil
+    return { success = true }
+end
 -- >>> BEGIN UNIT-18 Cheat Table Records <<<
 
 local UNIT18_TYPE_MAP = {
@@ -4149,6 +4163,11 @@ end
 
 -- Helper: check process is attached (for tools that need a target process address)
 local function requireProcess()
+    if (getOpenedProcessID() or 0) == 0 then
+        return false, { success = false, error = "No process attached", error_code = "NO_PROCESS" }
+    end
+    return true, nil
+end
 -- >>> BEGIN UNIT-12 Symbol Management <<<
 local function cmd_register_symbol(params)
     local name = params.name
@@ -4507,11 +4526,6 @@ local function cmd_generate_code_injection_script(params)
 end
 
 -- >>> END UNIT-13 <<<
-    if not debug_isDebugging() then
-        return false, { success = false, error = "Debugger not active. Call debugProcess() first.", error_code = "NO_DEBUGGER" }
-    end
-    return true, nil
-end
 
 -- All settable register names shared between get and set handlers
 local U11_REG_NAMES = {
@@ -5432,11 +5446,6 @@ local commandHandlers = {
     dbk_writes_ignore_write_protection = cmd_dbk_writes_ignore_write_protection,
     get_physical_address_cr3 = cmd_get_physical_address_cr3,
 
-    -- Utility
-    ping = cmd_ping,
-    -- Utility
-    ping = cmd_ping,
-
     -- Shell Execution (UNIT-20b) - Security gate enforced on Python side
     run_command = cmd_run_command,
     shell_execute = cmd_shell_execute,
@@ -5476,11 +5485,6 @@ local commandHandlers = {
     key_up = cmd_key_up,
     do_key_press = cmd_do_key_press,
     get_screen_info = cmd_get_screen_info,
-
-    -- Utility
-    ping = cmd_ping,
-    -- Utility
-    ping = cmd_ping,
 
     -- Window / GUI (Unit-16)
     find_window             = cmd_find_window,
