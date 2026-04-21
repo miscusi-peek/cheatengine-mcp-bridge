@@ -1,0 +1,292 @@
+{
+  "source": "ce_mcp_bridge.lua",
+  "source_sha256": "9c595d14d36ef7e41308d87c53d7c66d539a4191c3165ff26d94a2371b799663",
+  "parts_dir": "parts",
+  "parts": [
+    {
+      "kind": "raw",
+      "label": "bridge_preamble_globals",
+      "filename": "000_bridge_preamble_globals.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-05 Shared helpers",
+      "filename": "001_unit_05_shared_helpers.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "cleanup_json_and_shared_runtime",
+      "filename": "002_cleanup_json_and_shared_runtime.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-01 Process & Modules",
+      "filename": "003_unit_01_process_modules.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u01_u02",
+      "filename": "004_spacer_u01_u02.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-02 Memory Read",
+      "filename": "005_unit_02_memory_read.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u02_u03",
+      "filename": "006_spacer_u02_u03.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-03 Pattern Scanning",
+      "filename": "007_unit_03_pattern_scanning.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u03_u04",
+      "filename": "008_spacer_u03_u04.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-04 Memory Write",
+      "filename": "009_unit_04_memory_write.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u04_u05a",
+      "filename": "010_spacer_u04_u05a.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-05a Disassembly & Analysis",
+      "filename": "011_unit_05a_disassembly_analysis.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u05a_u05b",
+      "filename": "012_spacer_u05a_u05b.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-05b Reference Finding",
+      "filename": "013_unit_05b_reference_finding.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u05b_u06a",
+      "filename": "014_spacer_u05b_u06a.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-06a Breakpoints",
+      "filename": "015_unit_06a_breakpoints.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u06a_u06b",
+      "filename": "016_spacer_u06a_u06b.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-06b Analysis & Utility",
+      "filename": "017_unit_06b_analysis_utility.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u06b_u06c",
+      "filename": "018_spacer_u06b_u06c.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-06c DBVM Hypervisor Tools",
+      "filename": "019_unit_06c_dbvm_hypervisor_tools.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u06c_u07",
+      "filename": "020_spacer_u06c_u07.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-07 Process Lifecycle",
+      "filename": "021_unit_07_process_lifecycle.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u07_u08",
+      "filename": "022_spacer_u07_u08.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-08 Memory Allocation",
+      "filename": "023_unit_08_memory_allocation.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u08_u09",
+      "filename": "024_spacer_u08_u09.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-09 Code Injection",
+      "filename": "025_unit_09_code_injection.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u09_u10",
+      "filename": "026_spacer_u09_u10.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-10 Debugger Control",
+      "filename": "027_unit_10_debugger_control.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u10_u11",
+      "filename": "028_spacer_u10_u11.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-11 Context + ThreadBPs",
+      "filename": "029_unit_11_context_threadbps.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u11_u12",
+      "filename": "030_spacer_u11_u12.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-12 Symbol Management",
+      "filename": "031_unit_12_symbol_management.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u12_u13",
+      "filename": "032_spacer_u12_u13.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-13 Assembly & Compilation",
+      "filename": "033_unit_13_assembly_compilation.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u13_u14",
+      "filename": "034_spacer_u13_u14.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-14 Memory Operations",
+      "filename": "035_unit_14_memory_operations.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u14_u15",
+      "filename": "036_spacer_u14_u15.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-15 Advanced Scanning",
+      "filename": "037_unit_15_advanced_scanning.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u15_u16",
+      "filename": "038_spacer_u15_u16.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-16 Window GUI",
+      "filename": "039_unit_16_window_gui.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u16_u17",
+      "filename": "040_spacer_u16_u17.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-17 Input Automation",
+      "filename": "041_unit_17_input_automation.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u17_u18",
+      "filename": "042_spacer_u17_u18.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-18 Cheat Table Records",
+      "filename": "043_unit_18_cheat_table_records.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u18_u19",
+      "filename": "044_spacer_u18_u19.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-19 Structure Management",
+      "filename": "045_unit_19_structure_management.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u19_u20a",
+      "filename": "046_spacer_u19_u20a.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-20a File IO Clipboard",
+      "filename": "047_unit_20a_file_io_clipboard.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u20a_u20b",
+      "filename": "048_spacer_u20a_u20b.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-20b Shell Execution",
+      "filename": "049_unit_20b_shell_execution.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u20b_u21",
+      "filename": "050_spacer_u20b_u21.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-21 Kernel DBVM",
+      "filename": "051_unit_21_kernel_dbvm.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u21_u22",
+      "filename": "052_spacer_u21_u22.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-22 Threading Sync",
+      "filename": "053_unit_22_threading_sync.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "spacer_u22_u23",
+      "filename": "054_spacer_u22_u23.lua"
+    },
+    {
+      "kind": "unit",
+      "label": "UNIT-23 Debug Multimedia",
+      "filename": "055_unit_23_debug_multimedia.lua"
+    },
+    {
+      "kind": "raw",
+      "label": "main_processor_pipe_worker_and_control",
+      "filename": "056_main_processor_pipe_worker_and_control.lua"
+    }
+  ]
+}
