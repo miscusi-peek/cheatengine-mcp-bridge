@@ -100,10 +100,15 @@ pip install mcp pywin32
 ## Quick Start
 
 ### 1. Load Bridge in Cheat Engine
+1. Enable DBVM in Cheat Engine if you plan to use DBVM tools.
+2. Open Cheat Engine's Lua Engine or script executor.
+   - Preferred: `File` -> `Execute Script` -> open `MCP_Server/ce_mcp_bridge.lua` -> `Execute`.
+   - If your Cheat Engine build does not show `File` -> `Execute Script`, use `Table` -> `Show Cheat Table Lua Script`, paste the `dofile(...)` line below, and execute it:
+
+```lua
+dofile([[C:\path\to\cheatengine-mcp-bridge\MCP_Server\ce_mcp_bridge.lua]])
 ```
-1. Enable DBVM in CheatEngine.
-2. File → Execute Script → Open ce_mcp_bridge.lua → Execute
-```
+
 Look for: `[MCP v12.0.0] MCP Server Listening on: CE_MCP_Bridge_v99`
 
 ### 2. Configure MCP Client
@@ -119,6 +124,16 @@ Add to your MCP configuration (e.g., `mcp_config.json`):
 }
 ```
 Restart the IDE to load the MCP server config.
+
+For Codex, add a TOML server block to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cheatengine]
+command = "python"
+args = ['C:\path\to\cheatengine-mcp-bridge\MCP_Server\mcp_cheatengine.py']
+```
+
+Use single quotes for the Windows path so TOML treats backslashes literally.
 
 ### 3. Verify Connection
 Use the `ping` tool to verify connectivity:
@@ -225,6 +240,24 @@ And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 > **You MUST disable:** Cheat Engine → Settings → Extra → **"Query memory region routines"**
 > 
 > Enabled: Causes `CLOCK_WATCHDOG_TIMEOUT` BSODs due to conflicts with DBVM/Anti-Cheat when scanning protected pages.
+
+---
+
+## Troubleshooting
+
+### Cheat Engine says "too many local variables"
+
+Load the bridge from disk with `dofile(...)` instead of pasting the full script into a cheat table script. The bridge also declares command handlers as global functions intentionally; this avoids Cheat Engine's Lua chunk limit of 200 local variables when the complete bridge is compiled at once.
+
+### MCP client cannot connect
+
+Check these in order:
+
+1. Cheat Engine is open and shows `MCP Server Listening on: CE_MCP_Bridge_v99`.
+2. The MCP client was restarted after adding the server config.
+3. The configured `mcp_cheatengine.py` path exists.
+4. `pip install -r MCP_Server/requirements.txt` has installed both `mcp` and `pywin32`.
+5. Run the MCP `ping` tool. A successful connection returns `success: true` and the bridge version. `process_id: 0` is normal until Cheat Engine is attached to a target process.
 
 ---
 

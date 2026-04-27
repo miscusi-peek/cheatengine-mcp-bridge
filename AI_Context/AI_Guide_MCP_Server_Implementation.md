@@ -14,6 +14,12 @@
 - **DO NOT** write to memory.
 - **USE** DBVM tools (`start_dbvm_watch`) for invisible tracing at Ring -1.
 
+### 3. LOADING AND CLIENT CONFIGURATION
+- Load the Lua bridge from Cheat Engine with `File -> Execute Script -> MCP_Server/ce_mcp_bridge.lua -> Execute` when available.
+- If that menu is unavailable, use `Table -> Show Cheat Table Lua Script` and execute only `dofile([[C:\path\to\cheatengine-mcp-bridge\MCP_Server\ce_mcp_bridge.lua]])`; do not paste the full bridge into the table script.
+- For Codex, configure `~/.codex/config.toml` with `[mcp_servers.cheatengine]`, `command = "python"`, and `args = ['C:\path\to\MCP_Server\mcp_cheatengine.py']`. TOML single-quoted strings keep Windows backslashes literal.
+- Restart the MCP client after config changes and verify the connection with `ping`. `process_id: 0` means the bridge is connected but CE has not attached to a target process yet.
+
 ---
 
 ## 1. OBJECTIVE

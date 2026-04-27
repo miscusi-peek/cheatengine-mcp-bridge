@@ -492,7 +492,7 @@ local function aobScanPEModules(maxCount)
     return found
 end
 
-local function cmd_get_process_info(params)
+function cmd_get_process_info(params)
     -- FORCE REFRESH: Tell CE to try and reload symbols using current DBVM rights
     pcall(reinitializeSymbolhandler)
     
@@ -566,7 +566,7 @@ local function cmd_get_process_info(params)
     return { success = false, error = "No process attached" }
 end
 
-local function cmd_enum_modules(params)
+function cmd_enum_modules(params)
     local pid = getOpenedProcessID()
     local modules = enumModules(pid)  -- Try with PID first
     
@@ -632,7 +632,7 @@ local function cmd_enum_modules(params)
     return { success = true, total = total, offset = offset, limit = limit, returned = #page, modules = page, fallback_used = fallback_used }
 end
 
-local function cmd_get_symbol_address(params)
+function cmd_get_symbol_address(params)
     local symbol = params.symbol or params.name
     if not symbol then return { success = false, error = "No symbol name" } end
     
@@ -647,7 +647,7 @@ end
 -- COMMAND HANDLERS - MEMORY READ
 -- ============================================================================
 
-local function cmd_read_memory(params)
+function cmd_read_memory(params)
     local addr = params.address
     local size = math.max(1, math.min(params.size or 256, 1048576))  -- 1 MB max
     
@@ -669,7 +669,7 @@ local function cmd_read_memory(params)
     }
 end
 
-local function cmd_read_integer(params)
+function cmd_read_integer(params)
     local addr = params.address
     local itype = params.type or "dword"
     
@@ -692,7 +692,7 @@ local function cmd_read_integer(params)
     return { success = true, address = toHex(addr), value = val, type = itype, hex = toHex(val) }
 end
 
-local function cmd_read_string(params)
+function cmd_read_string(params)
     local addr = params.address
     local maxlen = params.max_length or 256
     local wide = params.wide or false
@@ -791,7 +791,7 @@ local function cmd_read_string(params)
     return { success = true, address = toHex(addr), value = sanitized, encoding = encoding, wide = (encoding == "utf16le"), length = rawLen, raw_length = #sanitized }
 end
 
-local function cmd_read_pointer(params)
+function cmd_read_pointer(params)
     local base = params.base or params.address
     local offsets = params.offsets or {}
     
@@ -826,7 +826,7 @@ end
 -- COMMAND HANDLERS - PATTERN SCANNING
 -- ============================================================================
 
-local function cmd_aob_scan(params)
+function cmd_aob_scan(params)
     local pattern = params.pattern
     local protection = params.protection or "+X"
     local limit = params.limit or 100
@@ -850,7 +850,7 @@ local function cmd_aob_scan(params)
     return { success = true, count = #addresses, pattern = pattern, addresses = addresses }
 end
 
-local function cmd_scan_all(params)
+function cmd_scan_all(params)
     local value = params.value
     local vtype = params.type or "dword"
     
@@ -890,7 +890,7 @@ local function cmd_scan_all(params)
     return { success = true, count = count }
 end
 
-local function cmd_get_scan_results(params)
+function cmd_get_scan_results(params)
     -- limit: preferred param; max: backward-compat alias
     local limit = params.limit or params.max or 100
     limit = math.max(1, math.min(limit, 10000))
@@ -924,7 +924,7 @@ end
 -- COMMAND HANDLERS - NEXT SCAN & WRITE MEMORY (Added by MCP Enhancement)
 -- ============================================================================
 
-local function cmd_next_scan(params)
+function cmd_next_scan(params)
     local value = params.value
     local scanType = params.scan_type or "exact"
     
@@ -960,7 +960,7 @@ local function cmd_next_scan(params)
     return { success = true, count = fl.getCount() }
 end
 
-local function cmd_write_integer(params)
+function cmd_write_integer(params)
     local addr = params.address
     local value = params.value
     local vtype = params.type or "dword"
@@ -1006,7 +1006,7 @@ local function cmd_write_integer(params)
     return { success = true, address = toHex(addr), value = value, type = vtype }
 end
 
-local function cmd_write_memory(params)
+function cmd_write_memory(params)
     local addr = params.address
     local bytes = params.bytes
     
@@ -1023,7 +1023,7 @@ local function cmd_write_memory(params)
     return { success = true, address = toHex(addr), bytes_written = #bytes }
 end
 
-local function cmd_write_string(params)
+function cmd_write_string(params)
     local addr = params.address
     local str = params.value or params.string
     local wide = params.wide or false
@@ -1046,7 +1046,7 @@ end
 -- COMMAND HANDLERS - DISASSEMBLY & ANALYSIS
 -- ============================================================================
 
-local function cmd_disassemble(params)
+function cmd_disassemble(params)
     local addr = params.address
     local count = params.count or 20
     local count = math.max(1, math.min(params.count or 20, 1000))
@@ -1081,7 +1081,7 @@ local function cmd_disassemble(params)
     return { success = true, start_address = toHex(addr), total = total, offset = offset, limit = limit, returned = #page, instructions = page }
 end
 
-local function cmd_get_instruction_info(params)
+function cmd_get_instruction_info(params)
     local addr = params.address
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1108,7 +1108,7 @@ local function cmd_get_instruction_info(params)
     }
 end
 
-local function cmd_find_function_boundaries(params)
+function cmd_find_function_boundaries(params)
     local addr = params.address
     local maxSearch = params.max_search or 4096
 
@@ -1146,7 +1146,7 @@ local function cmd_find_function_boundaries(params)
     }
 end
 
-local function cmd_analyze_function(params)
+function cmd_analyze_function(params)
     local addr = params.address
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1225,7 +1225,7 @@ end
 -- COMMAND HANDLERS - REFERENCE FINDING
 -- ============================================================================
 
-local function cmd_find_references(params)
+function cmd_find_references(params)
     local targetAddr = params.address
 
     if type(targetAddr) == "string" then targetAddr = getAddressSafe(targetAddr) end
@@ -1272,7 +1272,7 @@ local function cmd_find_references(params)
     return { success = true, target = toHex(targetAddr), total = total, offset = offset, limit = limit, returned = #page, references = page, arch = is64 and "x64" or "x86" }
 end
 
-local function cmd_find_call_references(params)
+function cmd_find_call_references(params)
     local funcAddr = params.address or params.function_address
 
     if type(funcAddr) == "string" then funcAddr = getAddressSafe(funcAddr) end
@@ -1325,7 +1325,7 @@ local function clearGhostBpSlot(addr)
     end
 end
 
-local function cmd_set_breakpoint(params)
+function cmd_set_breakpoint(params)
     local addr = params.address
     local bpId = params.id
     local captureRegs = params.capture_registers ~= false
@@ -1391,7 +1391,7 @@ local function cmd_set_breakpoint(params)
     return { success = true, id = bpId, address = toHex(addr), slot = slot, method = "hardware_debug_register" }
 end
 
-local function cmd_set_data_breakpoint(params)
+function cmd_set_data_breakpoint(params)
     local addr = params.address
     local bpId = params.id
     local accessType = params.access_type or "w"  -- r, w, rw
@@ -1457,7 +1457,7 @@ local function cmd_set_data_breakpoint(params)
     return { success = true, id = bpId, address = toHex(addr), slot = slot, access_type = accessType, method = "hardware_debug_register" }
 end
 
-local function cmd_remove_breakpoint(params)
+function cmd_remove_breakpoint(params)
     local bpId = params.id
     
     if bpId and serverState.breakpoints[bpId] then
@@ -1475,7 +1475,7 @@ local function cmd_remove_breakpoint(params)
     return { success = false, error = "Breakpoint not found: " .. tostring(bpId) }
 end
 
-local function cmd_get_breakpoint_hits(params)
+function cmd_get_breakpoint_hits(params)
     local bpId = params.id
     local clear = params.clear ~= false
 
@@ -1497,7 +1497,7 @@ local function cmd_get_breakpoint_hits(params)
     return { success = true, total = total, offset = offset, limit = limit, returned = #page, hits = page }
 end
 
-local function cmd_list_breakpoints(params)
+function cmd_list_breakpoints(params)
     local list = {}
     for id, bp in pairs(serverState.breakpoints) do
         table.insert(list, {
@@ -1510,7 +1510,7 @@ local function cmd_list_breakpoints(params)
     return { success = true, count = #list, breakpoints = list }
 end
 
-local function cmd_clear_all_breakpoints(params)
+function cmd_clear_all_breakpoints(params)
     local count = 0
     for id, bp in pairs(serverState.breakpoints) do
         pcall(function() debug_removeBreakpoint(bp.address) end)
@@ -1526,7 +1526,7 @@ end
 -- COMMAND HANDLERS - LUA EVALUATION
 -- ============================================================================
 
-local function cmd_evaluate_lua(params)
+function cmd_evaluate_lua(params)
     local code = params.code
     if not code then return { success = false, error = "No code provided" } end
     
@@ -1548,7 +1548,7 @@ end
 
 local _unit22_thread_counter = 0
 
-local function cmd_create_thread(params)
+function cmd_create_thread(params)
     -- SECURITY WARNING: This tool executes arbitrary Lua code inside CE's process.
     -- It carries the same risk as evaluate_lua. Only use with trusted code.
     local code = params.code
@@ -1570,7 +1570,7 @@ local function cmd_create_thread(params)
     return { success = true, thread_id = _unit22_thread_counter }
 end
 
-local function cmd_get_global_variable(params)
+function cmd_get_global_variable(params)
     local name = params.name
     if not name then return { success = false, error = "No variable name provided" } end
 
@@ -1581,7 +1581,7 @@ local function cmd_get_global_variable(params)
     return { success = true, value = tostring(value) }
 end
 
-local function cmd_set_global_variable(params)
+function cmd_set_global_variable(params)
     local name  = params.name
     local value = params.value
     if not name  then return { success = false, error = "No variable name provided"  } end
@@ -1594,7 +1594,7 @@ local function cmd_set_global_variable(params)
     return { success = true }
 end
 
-local function cmd_queue_to_main_thread(params)
+function cmd_queue_to_main_thread(params)
     -- SECURITY WARNING: This tool executes arbitrary Lua code inside CE's process
     -- on the main thread. It carries the same risk as evaluate_lua.
     local code = params.code
@@ -1614,7 +1614,7 @@ local function cmd_queue_to_main_thread(params)
     return { success = true }
 end
 
-local function cmd_check_synchronize(params)
+function cmd_check_synchronize(params)
     local ok, err = pcall(checkSynchronize)
     if not ok then
         return { success = false, error = "checkSynchronize failed: " .. tostring(err) }
@@ -1622,7 +1622,7 @@ local function cmd_check_synchronize(params)
     return { success = true }
 end
 
-local function cmd_in_main_thread(params)
+function cmd_in_main_thread(params)
     local ok, result = pcall(inMainThread)
     if not ok then
         return { success = false, error = "inMainThread failed: " .. tostring(result) }
@@ -1636,7 +1636,7 @@ end
 -- COMMAND HANDLERS - MEMORY REGIONS
 -- ============================================================================
 
-local function cmd_get_memory_regions(params)
+function cmd_get_memory_regions(params)
     local regions = {}
     local maxRegions = params.max or 100
     local pageSize = 0x1000  -- 4KB pages
@@ -1698,7 +1698,7 @@ end
 -- COMMAND HANDLERS - UTILITY
 -- ============================================================================
 
-local function cmd_ping(params)
+function cmd_ping(params)
     return {
         success = true,
         version = VERSION,
@@ -1708,7 +1708,7 @@ local function cmd_ping(params)
     }
 end
 
-local function cmd_search_string(params)
+function cmd_search_string(params)
     local searchStr = params.string or params.pattern
     local wide = params.wide or false
     local limit = params.limit or 100
@@ -1745,7 +1745,7 @@ end
 -- ============================================================================
 
 -- Dissect Structure: Uses CE's Structure.autoGuess to map memory into typed fields
-local function cmd_dissect_structure(params)
+function cmd_dissect_structure(params)
     local address = params.address
     local size = params.size or 256
     
@@ -1795,7 +1795,7 @@ local function cmd_dissect_structure(params)
 end
 
 -- Get Thread List: Returns all threads in the attached process
-local function cmd_get_thread_list(params)
+function cmd_get_thread_list(params)
     local list = createStringlist()
     getThreadlist(list)
 
@@ -1811,7 +1811,7 @@ local function cmd_get_thread_list(params)
 end
 
 -- AutoAssemble: Execute an AutoAssembler script
-local function cmd_auto_assemble(params)
+function cmd_auto_assemble(params)
     local script = params.script or params.code
     local disable = params.disable or false
     
@@ -1841,7 +1841,7 @@ local function cmd_auto_assemble(params)
 end
 
 -- Enum Memory Regions Full: Uses CE's native enumMemoryRegions for accurate data
-local function cmd_enum_memory_regions_full(params)
+function cmd_enum_memory_regions_full(params)
     local ok, regions = pcall(enumMemoryRegions)
     if not ok or not regions then
         return { success = false, error = "enumMemoryRegions failed" }
@@ -1881,7 +1881,7 @@ local function cmd_enum_memory_regions_full(params)
 end
 
 -- Read Pointer Chain: Follow a chain of pointers to resolve dynamic addresses
-local function cmd_read_pointer_chain(params)
+function cmd_read_pointer_chain(params)
     local base = params.base
     local offsets = params.offsets or {}
     
@@ -1931,7 +1931,7 @@ local function cmd_read_pointer_chain(params)
 end
 
 -- Get RTTI Class Name: Uses C++ RTTI to identify object types
-local function cmd_get_rtti_classname(params)
+function cmd_get_rtti_classname(params)
     local address = params.address
     
     if type(address) == "string" then address = getAddressSafe(address) end
@@ -1958,7 +1958,7 @@ local function cmd_get_rtti_classname(params)
 end
 
 -- Get Address Info: Converts raw address to symbolic name (module+offset)
-local function cmd_get_address_info(params)
+function cmd_get_address_info(params)
     local address = params.address
     local includeModules = params.include_modules ~= false  -- default true
     local includeSymbols = params.include_symbols ~= false  -- default true
@@ -1998,7 +1998,7 @@ local function cmd_get_address_info(params)
 end
 
 -- Checksum Memory: Calculate MD5 hash of a memory region
-local function cmd_checksum_memory(params)
+function cmd_checksum_memory(params)
     local address = params.address
     local size = params.size or 256
     
@@ -2025,7 +2025,7 @@ local function cmd_checksum_memory(params)
 end
 
 -- Generate Signature: Creates a unique AOB pattern for an address (for re-acquisition)
-local function cmd_generate_signature(params)
+function cmd_generate_signature(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2076,7 +2076,7 @@ end
 
 -- Get Physical Address: Converts virtual address to physical RAM address
 -- Required for DBVM operations which work on physical memory
-local function cmd_get_physical_address(params)
+function cmd_get_physical_address(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2112,7 +2112,7 @@ end
 -- This is the "Find what writes/reads" equivalent but at Ring -1 (invisible to games)
 -- Start DBVM Watch: Hypervisor-level memory access monitoring
 -- This is the "Find what writes/reads" equivalent but at Ring -1 (invisible to games)
-local function cmd_start_dbvm_watch(params)
+function cmd_start_dbvm_watch(params)
     local addr = params.address
     local mode = params.mode or "w"  -- "w" = write, "r" = read, "rw" = both, "x" = execute
     local maxEntries = params.max_entries or 1000  -- Internal buffer size
@@ -2219,7 +2219,7 @@ end
 
 -- Poll DBVM Watch: Retrieve logged accesses WITHOUT stopping the watch
 -- This is CRITICAL for continuous packet monitoring - logs can be polled repeatedly
-local function cmd_poll_dbvm_watch(params)
+function cmd_poll_dbvm_watch(params)
     local addr = params.address
     local clear = (params.clear ~= false)  -- nil→true, false→false, true→true
     local max_results = params.max_results or 1000
@@ -2290,7 +2290,7 @@ end
 
 -- Stop DBVM Watch: Retrieve logged accesses and disable monitoring
 -- Returns all instructions that touched the monitored memory
-local function cmd_stop_dbvm_watch(params)
+function cmd_stop_dbvm_watch(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2366,7 +2366,7 @@ local progressStateMap = {
     indeterminate = tbpsIndeterminate,
 }
 
-local function cmd_output_debug_string(params)
+function cmd_output_debug_string(params)
     local message = params.message
     if type(message) ~= "string" then
         return { success = false, error = "message must be a string", error_code = "INVALID_PARAMS" }
@@ -2376,7 +2376,7 @@ local function cmd_output_debug_string(params)
     return { success = true }
 end
 
-local function cmd_speak_text(params)
+function cmd_speak_text(params)
     local text = params.text
     if type(text) ~= "string" then
         return { success = false, error = "text must be a string", error_code = "INVALID_PARAMS" }
@@ -2391,7 +2391,7 @@ local function cmd_speak_text(params)
     return { success = true }
 end
 
-local function cmd_play_sound(params)
+function cmd_play_sound(params)
     if type(params.filename) ~= "string" or params.filename:find("%.%.") then
         return { success = false, error = "Invalid filename", error_code = "INVALID_PARAMS" }
     end
@@ -2400,13 +2400,13 @@ local function cmd_play_sound(params)
     return { success = true }
 end
 
-local function cmd_beep(params)
+function cmd_beep(params)
     local ok, err = pcall(beep)
     if not ok then return { success = false, error = tostring(err) } end
     return { success = true }
 end
 
-local function cmd_set_progress_state(params)
+function cmd_set_progress_state(params)
     local tbState = progressStateMap[params.state]
     if not tbState then
         return { success = false, error = "state must be one of: none, normal, paused, error, indeterminate", error_code = "INVALID_PARAMS" }
@@ -2416,7 +2416,7 @@ local function cmd_set_progress_state(params)
     return { success = true }
 end
 
-local function cmd_set_progress_value(params)
+function cmd_set_progress_value(params)
     local current = params.current
     local max = params.max
     if type(current) ~= "number" or type(max) ~= "number" then
@@ -2448,25 +2448,25 @@ local function dbkNotLoadedError()
     }
 end
 
-local function cmd_dbk_get_cr0(params)
+function cmd_dbk_get_cr0(params)
     local ok, result = pcall(dbk_getCR0)
     if not ok then return dbkNotLoadedError() end
     return { success = true, cr0 = toHex(result) }
 end
 
-local function cmd_dbk_get_cr3(params)
+function cmd_dbk_get_cr3(params)
     local ok, result = pcall(dbk_getCR3)
     if not ok then return dbkNotLoadedError() end
     return { success = true, cr3 = toHex(result) }
 end
 
-local function cmd_dbk_get_cr4(params)
+function cmd_dbk_get_cr4(params)
     local ok, result = pcall(dbk_getCR4)
     if not ok then return dbkNotLoadedError() end
     return { success = true, cr4 = toHex(result) }
 end
 
-local function cmd_read_process_memory_cr3(params)
+function cmd_read_process_memory_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -2495,7 +2495,7 @@ local function cmd_read_process_memory_cr3(params)
     return { success = true, bytes = byteTable, size = #byteTable }
 end
 
-local function cmd_write_process_memory_cr3(params)
+function cmd_write_process_memory_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -2521,7 +2521,7 @@ local function cmd_write_process_memory_cr3(params)
     return { success = true, bytes_written = #bytes }
 end
 
-local function cmd_map_memory(params)
+function cmd_map_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -2551,7 +2551,7 @@ local function cmd_map_memory(params)
     return { success = true, mapped_address = key }
 end
 
-local function cmd_unmap_memory(params)
+function cmd_unmap_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -2576,7 +2576,7 @@ local function cmd_unmap_memory(params)
     return { success = true }
 end
 
-local function cmd_dbk_writes_ignore_write_protection(params)
+function cmd_dbk_writes_ignore_write_protection(params)
     local enable = params.enable
     if type(enable) ~= "boolean" then
         return { success = false, error = "Parameter enable (boolean) is required" }
@@ -2588,7 +2588,7 @@ local function cmd_dbk_writes_ignore_write_protection(params)
     return { success = true }
 end
 
-local function cmd_get_physical_address_cr3(params)
+function cmd_get_physical_address_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -2628,7 +2628,7 @@ local function sanitizeFilename(f)
     return f, nil
 end
 
-local function cmd_file_exists(params)
+function cmd_file_exists(params)
     local filename = params.filename
     local f, err = sanitizeFilename(filename)
     if not f then return { success = false, error = err } end
@@ -2637,7 +2637,7 @@ local function cmd_file_exists(params)
     return { success = true, exists = result == true }
 end
 
-local function cmd_delete_file(params)
+function cmd_delete_file(params)
     local filename = params.filename
     local f, err = sanitizeFilename(filename)
     if not f then return { success = false, error = err } end
@@ -2658,21 +2658,21 @@ local function listPathEntries(path, ceFn, resultKey)
     return { success = true, count = #entries, [resultKey] = entries }
 end
 
-local function cmd_get_file_list(params)
+function cmd_get_file_list(params)
     return listPathEntries(params.path, getFileList, "files")
 end
 
-local function cmd_get_directory_list(params)
+function cmd_get_directory_list(params)
     return listPathEntries(params.path, getDirectoryList, "directories")
 end
 
-local function cmd_get_temp_folder(params)
+function cmd_get_temp_folder(params)
     local ok, result = pcall(getTempFolder)
     if not ok then return { success = false, error = tostring(result) } end
     return { success = true, path = tostring(result) }
 end
 
-local function cmd_get_file_version(params)
+function cmd_get_file_version(params)
     local f, err = sanitizeFilename(params.filename)
     if not f then return { success = false, error = err } end
     -- getFileVersion returns two values; wrap in a closure so pcall captures both
@@ -2695,13 +2695,13 @@ local function cmd_get_file_version(params)
     }
 end
 
-local function cmd_read_clipboard(params)
+function cmd_read_clipboard(params)
     local ok, result = pcall(readFromClipboard)
     if not ok then return { success = false, error = tostring(result) } end
     return { success = true, text = tostring(result or "") }
 end
 
-local function cmd_write_clipboard(params)
+function cmd_write_clipboard(params)
     local text = params.text
     if type(text) ~= "string" then return { success = false, error = "text must be a string" } end
     local ok, err = pcall(writeToClipboard, text)
@@ -2719,7 +2719,7 @@ end
 
 -- run_command: Wraps CE's runCommand(exepath, parameters, pathtoexecutein)
 -- Returns output string and exit code. SECURITY: arbitrary code execution.
-local function cmd_run_command(params)
+function cmd_run_command(params)
     local command = params.command
     local args = params.args or ""
 
@@ -2742,7 +2742,7 @@ end
 
 -- shell_execute: Wraps CE's shellExecute(command, parameters, folder, showcommand)
 -- SECURITY: arbitrary code execution via Windows ShellExecute.
-local function cmd_shell_execute(params)
+function cmd_shell_execute(params)
     local command = params.command
     local args = params.args or ""
     local verb = string.lower(params.verb or "open")
@@ -2848,7 +2848,7 @@ local function readElementProps(el)
     return name or "", offset or 0, vt, size or 0
 end
 
-local function cmd_create_structure(params)
+function cmd_create_structure(params)
     local name = params.name
     if not name or name == "" then
         return { success = false, error = "name is required", error_code = "INVALID_PARAMS" }
@@ -2871,7 +2871,7 @@ local function cmd_create_structure(params)
     return { success = true, structure_id = id }
 end
 
-local function cmd_get_structure_by_name(params)
+function cmd_get_structure_by_name(params)
     local name = params.name
     if not name or name == "" then
         return { success = false, error = "name is required", error_code = "INVALID_PARAMS" }
@@ -2913,7 +2913,7 @@ local function cmd_get_structure_by_name(params)
     return { success = false, error = "Structure not found: " .. name, error_code = "NOT_FOUND" }
 end
 
-local function cmd_add_element_to_structure(params)
+function cmd_add_element_to_structure(params)
     local ename  = params.name
     local offset = params.offset
     local etype  = params.type
@@ -2950,7 +2950,7 @@ local function cmd_add_element_to_structure(params)
     return { success = true, element_index = idx }
 end
 
-local function cmd_get_structure_elements(params)
+function cmd_get_structure_elements(params)
     local structure, err = resolveStructure(params)
     if not structure then return err end
 
@@ -2976,7 +2976,7 @@ local function cmd_get_structure_elements(params)
     return { success = true, structure_id = params.structure_id, elements = elements }
 end
 
-local function cmd_export_structure_to_xml(params)
+function cmd_export_structure_to_xml(params)
     local structure, err = resolveStructure(params)
     if not structure then return err end
 
@@ -3007,7 +3007,7 @@ local function cmd_export_structure_to_xml(params)
     return { success = true, xml = table.concat(lines, "\n") }
 end
 
-local function cmd_delete_structure(params)
+function cmd_delete_structure(params)
     local structure, err = resolveStructure(params)
     if not structure then return err end
 
@@ -3086,7 +3086,7 @@ local function unit18_rec_to_table(rec)
     }
 end
 
-local function cmd_load_table(params)
+function cmd_load_table(params)
     local filename = params.filename
     local err = unit18_check_filename(filename)
     if err then return err end
@@ -3098,7 +3098,7 @@ local function cmd_load_table(params)
     return { success = true }
 end
 
-local function cmd_save_table(params)
+function cmd_save_table(params)
     local filename = params.filename
     local err = unit18_check_filename(filename)
     if err then return err end
@@ -3110,7 +3110,7 @@ local function cmd_save_table(params)
     return { success = true }
 end
 
-local function cmd_get_address_list(params)
+function cmd_get_address_list(params)
     local offset = params.offset or 0
     local limit  = params.limit  or 100
 
@@ -3140,7 +3140,7 @@ local function cmd_get_address_list(params)
     }
 end
 
-local function cmd_get_memory_record(params)
+function cmd_get_memory_record(params)
     local id   = params.id
     local desc = params.description
 
@@ -3169,7 +3169,7 @@ local function cmd_get_memory_record(params)
     return { success = true, record = unit18_rec_to_table(rec) }
 end
 
-local function cmd_create_memory_record(params)
+function cmd_create_memory_record(params)
     local description = params.description
     local address     = params.address
     local typeStr     = string.lower(params.type or "dword")
@@ -3220,7 +3220,7 @@ local function cmd_create_memory_record(params)
     return { success = true, id = recId, record = unit18_rec_to_table(rec) }
 end
 
-local function cmd_delete_memory_record(params)
+function cmd_delete_memory_record(params)
     local id = params.id
     if id == nil then
         return { success = false, error = "id required", error_code = "INVALID_PARAMS" }
@@ -3240,7 +3240,7 @@ local function cmd_delete_memory_record(params)
     return { success = true }
 end
 
-local function cmd_get_memory_record_value(params)
+function cmd_get_memory_record_value(params)
     local id = params.id
     if id == nil then
         return { success = false, error = "id required", error_code = "INVALID_PARAMS" }
@@ -3260,7 +3260,7 @@ local function cmd_get_memory_record_value(params)
     return { success = true, value = tostring(value or "") }
 end
 
-local function cmd_set_memory_record_value(params)
+function cmd_set_memory_record_value(params)
     local id    = params.id
     local value = params.value
     if id == nil then
@@ -3317,7 +3317,7 @@ local function run_key_action(fn, vk, fn_name)
     return { success = true }
 end
 
-local function cmd_get_pixel(params)
+function cmd_get_pixel(params)
     local x, y, err = parse_xy(params)
     if err then return { success = false, error = err } end
 
@@ -3330,13 +3330,13 @@ local function cmd_get_pixel(params)
     return { success = true, r = r, g = g, b = b, rgb = rgb }
 end
 
-local function cmd_get_mouse_pos(params)
+function cmd_get_mouse_pos(params)
     local ok, x, y = pcall(getMousePos)
     if not ok then return { success = false, error = "getMousePos failed: " .. tostring(x) } end
     return { success = true, x = x, y = y }
 end
 
-local function cmd_set_mouse_pos(params)
+function cmd_set_mouse_pos(params)
     local x, y, err = parse_xy(params)
     if err then return { success = false, error = err } end
 
@@ -3345,7 +3345,7 @@ local function cmd_set_mouse_pos(params)
     return { success = true }
 end
 
-local function cmd_is_key_pressed(params)
+function cmd_is_key_pressed(params)
     local vk, err = parse_vk(params)
     if err then return { success = false, error = err } end
 
@@ -3354,25 +3354,25 @@ local function cmd_is_key_pressed(params)
     return { success = true, pressed = pressed == true }
 end
 
-local function cmd_key_down(params)
+function cmd_key_down(params)
     local vk, err = parse_vk(params)
     if err then return { success = false, error = err } end
     return run_key_action(keyDown, vk, "keyDown")
 end
 
-local function cmd_key_up(params)
+function cmd_key_up(params)
     local vk, err = parse_vk(params)
     if err then return { success = false, error = err } end
     return run_key_action(keyUp, vk, "keyUp")
 end
 
-local function cmd_do_key_press(params)
+function cmd_do_key_press(params)
     local vk, err = parse_vk(params)
     if err then return { success = false, error = err } end
     return run_key_action(doKeyPress, vk, "doKeyPress")
 end
 
-local function cmd_get_screen_info(params)
+function cmd_get_screen_info(params)
     local ok_w, width  = pcall(getScreenWidth)
     local ok_h, height = pcall(getScreenHeight)
     local ok_d, dpi    = pcall(getScreenDPI)
@@ -3398,7 +3398,7 @@ local function parseHandle(hexStr)
     return tonumber(hexStr, 16)
 end
 
-local function cmd_find_window(params)
+function cmd_find_window(params)
     local title      = params.title
     local class_name = params.class_name
 
@@ -3421,7 +3421,7 @@ local function cmd_find_window(params)
     return { success = true, handle = toHex(handle) }
 end
 
-local function cmd_get_window_caption(params)
+function cmd_get_window_caption(params)
     local handle = parseHandle(params.handle)
     if not handle then
         return { success = false, error = "Invalid handle" }
@@ -3438,7 +3438,7 @@ local function cmd_get_window_caption(params)
     return { success = true, caption = caption or "" }
 end
 
-local function cmd_get_window_class_name(params)
+function cmd_get_window_class_name(params)
     local handle = parseHandle(params.handle)
     if not handle then
         return { success = false, error = "Invalid handle" }
@@ -3455,7 +3455,7 @@ local function cmd_get_window_class_name(params)
     return { success = true, class_name = cls or "" }
 end
 
-local function cmd_get_window_process_id(params)
+function cmd_get_window_process_id(params)
     local handle = parseHandle(params.handle)
     if not handle then
         return { success = false, error = "Invalid handle" }
@@ -3472,7 +3472,7 @@ local function cmd_get_window_process_id(params)
     return { success = true, process_id = pid }
 end
 
-local function cmd_send_window_message(params)
+function cmd_send_window_message(params)
     local handle = parseHandle(params.handle)
     if not handle then
         return { success = false, error = "Invalid handle" }
@@ -3494,7 +3494,7 @@ local function cmd_send_window_message(params)
 end
 
 -- Modal dialog — blocks the CE main thread until the user clicks OK.
-local function cmd_show_message(params)
+function cmd_show_message(params)
     local message = params.message
     if not message then
         return { success = false, error = "message is required" }
@@ -3512,7 +3512,7 @@ local function cmd_show_message(params)
 end
 
 -- Modal dialog — blocks until the user submits or cancels.
-local function cmd_input_query(params)
+function cmd_input_query(params)
     local caption = params.caption or ""
     local prompt  = params.prompt  or ""
     local default = params.default or ""
@@ -3534,7 +3534,7 @@ local function cmd_input_query(params)
 end
 
 -- Modal dialog — blocks until the user selects an item or cancels.
-local function cmd_show_selection_list(params)
+function cmd_show_selection_list(params)
     local caption = params.caption or ""
     local prompt  = params.prompt  or ""
     local options = params.options
@@ -3619,7 +3619,7 @@ local function resolveScanOption(opt)
     end
 end
 
-local function cmd_aob_scan_unique(params)
+function cmd_aob_scan_unique(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3661,7 +3661,7 @@ local function cmd_aob_scan_unique(params)
     }
 end
 
-local function cmd_aob_scan_module(params)
+function cmd_aob_scan_module(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3712,7 +3712,7 @@ local function cmd_aob_scan_module(params)
     }
 end
 
-local function cmd_aob_scan_module_unique(params)
+function cmd_aob_scan_module_unique(params)
     -- requireProcess() is also called inside cmd_aob_scan_module; early-exit here gives a cleaner error path
     local ok, err = requireProcess()
     if not ok then return err end
@@ -3737,7 +3737,7 @@ local function cmd_aob_scan_module_unique(params)
     }
 end
 
-local function cmd_pointer_rescan(params)
+function cmd_pointer_rescan(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3768,7 +3768,7 @@ local function cmd_pointer_rescan(params)
     return { success = true, result_count = -1, note = "Pointer rescan complete. Check CE Pointer Scanner window for results." }
 end
 
-local function cmd_create_persistent_scan(params)
+function cmd_create_persistent_scan(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3799,7 +3799,7 @@ local function cmd_create_persistent_scan(params)
     return { success = true, scan_name = name }
 end
 
-local function cmd_persistent_scan_first_scan(params)
+function cmd_persistent_scan_first_scan(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3846,7 +3846,7 @@ local function cmd_persistent_scan_first_scan(params)
     return { success = true, scan_name = name, count = fl.getCount() }
 end
 
-local function cmd_persistent_scan_next_scan(params)
+function cmd_persistent_scan_next_scan(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -3894,7 +3894,7 @@ local function cmd_persistent_scan_next_scan(params)
     return { success = true, scan_name = name, count = fl.getCount() }
 end
 
-local function cmd_persistent_scan_get_results(params)
+function cmd_persistent_scan_get_results(params)
     local name   = params.name
     local offset = params.offset or 0
     local limit  = params.limit  or 100
@@ -3935,7 +3935,7 @@ local function cmd_persistent_scan_get_results(params)
     }
 end
 
-local function cmd_persistent_scan_destroy(params)
+function cmd_persistent_scan_destroy(params)
     local name = params.name
     if not name then return { success = false, error = "No name provided", error_code = "INVALID_PARAMS" } end
 
@@ -3963,7 +3963,7 @@ local function sanitizeFilename(f)
     return f, nil
 end
 
-local function cmd_copy_memory(params)
+function cmd_copy_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -3993,7 +3993,7 @@ local function cmd_copy_memory(params)
     return { success = true, dest_address = toHex(result), size = size }
 end
 
-local function cmd_compare_memory(params)
+function cmd_compare_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4023,7 +4023,7 @@ local function cmd_compare_memory(params)
     end
 end
 
-local function cmd_write_region_to_file(params)
+function cmd_write_region_to_file(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4048,7 +4048,7 @@ local function cmd_write_region_to_file(params)
     return { success = true, bytes_written = bytes_written or 0, filename = sanitized }
 end
 
-local function cmd_read_region_from_file(params)
+function cmd_read_region_from_file(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4071,7 +4071,7 @@ local function cmd_read_region_from_file(params)
     return { success = true, bytes_read = bytes_read or 0 }
 end
 
-local function cmd_md5_memory(params)
+function cmd_md5_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4092,7 +4092,7 @@ local function cmd_md5_memory(params)
     return { success = true, md5 = tostring(result) }
 end
 
-local function cmd_md5_file(params)
+function cmd_md5_file(params)
     local filename = params.filename
 
     local sanitized, err = sanitizeFilename(filename)
@@ -4106,7 +4106,7 @@ local function cmd_md5_file(params)
     return { success = true, md5 = tostring(result) }
 end
 
-local function cmd_create_section(params)
+function cmd_create_section(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4121,7 +4121,7 @@ local function cmd_create_section(params)
     return { success = true, handle = toHex(handle) }
 end
 
-local function cmd_map_view_of_section(params)
+function cmd_map_view_of_section(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then return { success = false, error = "No process attached" } end
 
@@ -4169,7 +4169,7 @@ local function requireProcess()
     return true, nil
 end
 -- >>> BEGIN UNIT-12 Symbol Management <<<
-local function cmd_register_symbol(params)
+function cmd_register_symbol(params)
     local name = params.name
     local address = params.address
     local do_not_save = params.do_not_save
@@ -4194,7 +4194,7 @@ local function cmd_register_symbol(params)
     return { success = true, name = name, address = toHex(resolvedAddr) }
 end
 
-local function cmd_unregister_symbol(params)
+function cmd_unregister_symbol(params)
     local name = params.name
     if type(name) ~= "string" or name == "" then
         return { success = false, error = "Parameter 'name' must be a non-empty string", error_code = "INVALID_PARAMS" }
@@ -4206,7 +4206,7 @@ local function cmd_unregister_symbol(params)
     return { success = true }
 end
 
-local function cmd_enum_registered_symbols(params)
+function cmd_enum_registered_symbols(params)
     local ok, result = pcall(enumRegisteredSymbols)
     if not ok then
         return { success = false, error = "enumRegisteredSymbols failed: " .. tostring(result), error_code = "INTERNAL_ERROR" }
@@ -4229,7 +4229,7 @@ local function cmd_enum_registered_symbols(params)
     return { success = true, count = #symbols, symbols = symbols }
 end
 
-local function cmd_delete_all_registered_symbols(params)
+function cmd_delete_all_registered_symbols(params)
     -- Count before deleting (CE returns no count from deleteAllRegisteredSymbols)
     local countOk, symResult = pcall(enumRegisteredSymbols)
     local deletedCount = 0
@@ -4243,7 +4243,7 @@ local function cmd_delete_all_registered_symbols(params)
     return { success = true, deleted_count = deletedCount }
 end
 
-local function cmd_enable_windows_symbols(params)
+function cmd_enable_windows_symbols(params)
     local ok, err = pcall(enableWindowsSymbols)
     if not ok then
         return { success = false, error = "enableWindowsSymbols failed: " .. tostring(err), error_code = "INTERNAL_ERROR" }
@@ -4251,7 +4251,7 @@ local function cmd_enable_windows_symbols(params)
     return { success = true }
 end
 
-local function cmd_enable_kernel_symbols(params)
+function cmd_enable_kernel_symbols(params)
     local ok, err = pcall(enableKernelSymbols)
     if not ok then
         local errMsg = tostring(err)
@@ -4263,7 +4263,7 @@ local function cmd_enable_kernel_symbols(params)
     return { success = true }
 end
 
-local function cmd_get_symbol_info(params)
+function cmd_get_symbol_info(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -4289,7 +4289,7 @@ local function cmd_get_symbol_info(params)
     }
 end
 
-local function cmd_get_module_size(params)
+function cmd_get_module_size(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -4307,7 +4307,7 @@ local function cmd_get_module_size(params)
     return { success = true, size = sz }
 end
 
-local function cmd_load_new_symbols(params)
+function cmd_load_new_symbols(params)
     local ok, err = pcall(loadNewSymbols)
     if not ok then
         return { success = false, error = "loadNewSymbols failed: " .. tostring(err), error_code = "INTERNAL_ERROR" }
@@ -4315,7 +4315,7 @@ local function cmd_load_new_symbols(params)
     return { success = true }
 end
 
-local function cmd_reinitialize_symbol_handler(params)
+function cmd_reinitialize_symbol_handler(params)
     local ok, err = pcall(reinitializeSymbolhandler)
     if not ok then
         return { success = false, error = "reinitializeSymbolhandler failed: " .. tostring(err), error_code = "INTERNAL_ERROR" }
@@ -4336,7 +4336,7 @@ local function u11_guard()
     return true, nil
 end
 
-local function cmd_assemble_instruction(params)
+function cmd_assemble_instruction(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -4371,7 +4371,7 @@ local function cmd_assemble_instruction(params)
     return { success = true, bytes = bytes, size = #bytes }
 end
 
-local function cmd_auto_assemble_check(params)
+function cmd_auto_assemble_check(params)
     local script = params.script
     local enable = params.enable
     if enable == nil then enable = true end
@@ -4396,7 +4396,7 @@ local function cmd_auto_assemble_check(params)
     return { success = true, valid = false, errors = errors }
 end
 
-local function cmd_compile_c_code(params)
+function cmd_compile_c_code(params)
     -- No NO_PROCESS guard: pure compilation without an address doesn't require a target process
     local source = params.source
     local address = params.address
@@ -4436,7 +4436,7 @@ local function cmd_compile_c_code(params)
     return { success = true, symbols = symResult, errors = {} }
 end
 
-local function cmd_compile_cs_code(params)
+function cmd_compile_cs_code(params)
     local source = params.source
     local references = params.references or {}
     local coreAssembly = params.core_assembly
@@ -4463,7 +4463,7 @@ local function cmd_compile_cs_code(params)
     return { success = true, assembly_handle = tostring(result) }
 end
 
-local function cmd_generate_api_hook_script(params)
+function cmd_generate_api_hook_script(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -4496,7 +4496,7 @@ local function cmd_generate_api_hook_script(params)
     return { success = true, script = tostring(result) }
 end
 
-local function cmd_generate_code_injection_script(params)
+function cmd_generate_code_injection_script(params)
     local ok, err = requireProcess()
     if not ok then return err end
 
@@ -4535,7 +4535,7 @@ local U11_REG_NAMES = {
     "EFLAGS"
 }
 
-local function cmd_debug_get_context(params)
+function cmd_debug_get_context(params)
     local extraRegs = params.extra_regs == true
 
     local ok, err = u11_guard()
@@ -4582,7 +4582,7 @@ local function cmd_debug_get_context(params)
     return result
 end
 
-local function cmd_debug_set_context(params)
+function cmd_debug_set_context(params)
     local registers = params.registers
     if type(registers) ~= "table" then
         return { success = false, error = "registers must be an object/dict", error_code = "INVALID_PARAMS" }
@@ -4612,7 +4612,7 @@ local function cmd_debug_set_context(params)
     return { success = true }
 end
 
-local function cmd_debug_get_xmm_pointer(params)
+function cmd_debug_get_xmm_pointer(params)
     local xmmNr = params.xmm_nr or 0
 
     local ok, err = u11_guard()
@@ -4626,7 +4626,7 @@ local function cmd_debug_get_xmm_pointer(params)
     return { success = true, xmm_nr = xmmNr, pointer = toHex(ptr) }
 end
 
-local function cmd_debug_set_last_branch_recording(params)
+function cmd_debug_set_last_branch_recording(params)
     local enable = params.enable == true
 
     local ok, err = u11_guard()
@@ -4651,7 +4651,7 @@ local function cmd_debug_set_last_branch_recording(params)
     return { success = true, enabled = enable }
 end
 
-local function cmd_debug_get_last_branch_record(params)
+function cmd_debug_get_last_branch_record(params)
     local index = params.index or 0
 
     local ok, err = u11_guard()
@@ -4674,7 +4674,7 @@ local function cmd_debug_get_last_branch_record(params)
     }
 end
 
-local function cmd_debug_set_breakpoint_for_thread(params)
+function cmd_debug_set_breakpoint_for_thread(params)
     local threadId = params.thread_id
     local addr     = params.address
     local size     = params.size    or 1
@@ -4729,7 +4729,7 @@ local function cmd_debug_set_breakpoint_for_thread(params)
     }
 end
 
-local function cmd_debug_remove_breakpoint_for_thread(params)
+function cmd_debug_remove_breakpoint_for_thread(params)
     local threadId = params.thread_id
     local addr     = params.address
 
@@ -4787,7 +4787,7 @@ local DEBUGGER_INTERFACE_CURRENT_NAME = {
     [5] = "gdb",
 }
 
-local function cmd_debug_process(params)
+function cmd_debug_process(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
         return { success = false, error = "No process attached" }
@@ -4805,7 +4805,7 @@ local function cmd_debug_process(params)
     }
 end
 
-local function cmd_debug_is_debugging(params)
+function cmd_debug_is_debugging(params)
     local ok, result = pcall(debug_isDebugging)
     if not ok then
         return { success = false, error = tostring(result) }
@@ -4813,7 +4813,7 @@ local function cmd_debug_is_debugging(params)
     return { success = true, is_debugging = result == true }
 end
 
-local function cmd_debug_get_current_debugger_interface(params)
+function cmd_debug_get_current_debugger_interface(params)
     local ok, iface = pcall(debug_getCurrentDebuggerInterface)
     if not ok then
         return { success = false, error = tostring(iface) }
@@ -4847,7 +4847,7 @@ local function callWithProcessGuard(fn)
     return { success = true }
 end
 
-local function cmd_debug_break_thread(params)
+function cmd_debug_break_thread(params)
     local guard = requireDebugger()
     if guard then return guard end
     local tid = params.thread_id
@@ -4860,7 +4860,7 @@ local function cmd_debug_break_thread(params)
     return { success = true }
 end
 
-local function cmd_debug_continue(params)
+function cmd_debug_continue(params)
     local guard = requireDebugger()
     if guard then return guard end
     local method = params.method or "run"
@@ -4880,14 +4880,14 @@ local function cmd_debug_continue(params)
     return { success = true }
 end
 
-local function cmd_debug_detach(params)
+function cmd_debug_detach(params)
     local ok, result = pcall(detachIfPossible)
     if not ok then return { success = false, error = tostring(result) } end
     return { success = true, detached = result == true }
 end
 
-local function cmd_pause_process(params)   return callWithProcessGuard(pause)   end
-local function cmd_unpause_process(params) return callWithProcessGuard(unpause) end
+function cmd_pause_process(params)   return callWithProcessGuard(pause)   end
+function cmd_unpause_process(params) return callWithProcessGuard(unpause) end
 
 -- >>> END UNIT-10 <<<
 -- >>> BEGIN UNIT-09 Code Injection <<<
@@ -4903,7 +4903,7 @@ local function requireProcess()
     return pid and pid > 0
 end
 
-local function cmd_inject_dll(params)
+function cmd_inject_dll(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local filepath = params.filepath
     if not filepath then return { success = false, error = "No filepath provided" } end
@@ -4916,7 +4916,7 @@ local function cmd_inject_dll(params)
     return { success = result == true }
 end
 
-local function cmd_inject_dotnet_dll(params)
+function cmd_inject_dotnet_dll(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local dllpath    = params.filepath
     local className  = params.class_name
@@ -4936,7 +4936,7 @@ local function cmd_inject_dotnet_dll(params)
     return { success = true, result = result }
 end
 
-local function cmd_execute_code(params)
+function cmd_execute_code(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -4953,7 +4953,7 @@ local function cmd_execute_code(params)
     return { success = true, return_value = retval }
 end
 
-local function cmd_execute_code_ex(params)
+function cmd_execute_code_ex(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -4971,7 +4971,7 @@ local function cmd_execute_code_ex(params)
     return { success = true, return_value = retval }
 end
 
-local function cmd_execute_method(params)
+function cmd_execute_method(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -4993,7 +4993,7 @@ local function cmd_execute_method(params)
 end
 
 -- No requireProcess() guard: runs in CE's own process, not the target.
-local function cmd_execute_code_local(params)
+function cmd_execute_code_local(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -5008,7 +5008,7 @@ local function cmd_execute_code_local(params)
 end
 
 -- No requireProcess() guard: runs in CE's own process, not the target.
-local function cmd_execute_code_local_ex(params)
+function cmd_execute_code_local_ex(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -5045,7 +5045,7 @@ local function protectionName(r, w, x)
     return "PAGE_NOACCESS"
 end
 
-local function cmd_allocate_memory(params)
+function cmd_allocate_memory(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5075,7 +5075,7 @@ local function cmd_allocate_memory(params)
     return { success = true, address = toHex(result) }
 end
 
-local function cmd_free_memory(params)
+function cmd_free_memory(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5096,7 +5096,7 @@ local function cmd_free_memory(params)
     return { success = true }
 end
 
-local function cmd_allocate_shared_memory(params)
+function cmd_allocate_shared_memory(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5122,7 +5122,7 @@ local function cmd_allocate_shared_memory(params)
     return { success = true, address = toHex(result) }
 end
 
-local function cmd_get_memory_protection(params)
+function cmd_get_memory_protection(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5151,7 +5151,7 @@ local function cmd_get_memory_protection(params)
     }
 end
 
-local function cmd_set_memory_protection(params)
+function cmd_set_memory_protection(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5179,7 +5179,7 @@ local function cmd_set_memory_protection(params)
     return { success = true }
 end
 
-local function cmd_full_access(params)
+function cmd_full_access(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5203,7 +5203,7 @@ local function cmd_full_access(params)
     return { success = true }
 end
 
-local function cmd_allocate_kernel_memory(params)
+function cmd_allocate_kernel_memory(params)
     if (getOpenedProcessID() or 0) == 0 then
         return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
@@ -5231,7 +5231,7 @@ end
 -- >>> END UNIT-08 <<<
 -- >>> BEGIN UNIT-07 Process Lifecycle <<<
 
-local function cmd_open_process(params)
+function cmd_open_process(params)
     local target = params.process_id_or_name
     if not target then return { success = false, error = "Missing process_id_or_name" } end
 
@@ -5248,7 +5248,7 @@ local function cmd_open_process(params)
     return { success = true, process_id = pid, process_name = name }
 end
 
-local function cmd_get_process_list(params)
+function cmd_get_process_list(params)
     local ok, list = pcall(getProcesslist)
     if not ok then return { success = false, error = tostring(list) } end
 
@@ -5275,7 +5275,7 @@ local function cmd_get_process_list(params)
     return { success = true, count = #processes, processes = processes }
 end
 
-local function cmd_get_processid_from_name(params)
+function cmd_get_processid_from_name(params)
     local name = params.name
     if not name then return { success = false, error = "Missing name" } end
 
@@ -5288,7 +5288,7 @@ local function cmd_get_processid_from_name(params)
     return { success = true, process_id = pid }
 end
 
-local function cmd_get_foreground_process(params)
+function cmd_get_foreground_process(params)
     local ok, pid = pcall(getForegroundProcess)
     if not ok then return { success = false, error = tostring(pid) } end
 
@@ -5299,7 +5299,7 @@ local function cmd_get_foreground_process(params)
     return { success = true, process_id = pid or 0, window_handle = toHex(hwnd) }
 end
 
-local function cmd_create_process(params)
+function cmd_create_process(params)
     local path = params.path
     if not path then return { success = false, error = "Missing path" } end
     local args = params.args or ""
@@ -5315,7 +5315,7 @@ local function cmd_create_process(params)
     return { success = true, process_id = result_pid }
 end
 
-local function cmd_get_opened_process_id(params)
+function cmd_get_opened_process_id(params)
     local ok, pid = pcall(getOpenedProcessID)
     if not ok then return { success = false, error = tostring(pid) } end
     if not pid or pid == 0 then
@@ -5324,7 +5324,7 @@ local function cmd_get_opened_process_id(params)
     return { success = true, process_id = pid }
 end
 
-local function cmd_get_opened_process_handle(params)
+function cmd_get_opened_process_handle(params)
     local ok, handle = pcall(getOpenedProcessHandle)
     if not ok then return { success = false, error = tostring(handle) } end
     return { success = true, handle = toHex(handle or 0) }
