@@ -289,6 +289,58 @@ AI: "0x00=vtable, 0x08=itemCount(int), 0x10=itemArray(ptr)..."
 
 ---
 
+## CT Table Auto-Updater
+
+`MCP_Server/ct_updater` is a companion tool that automatically checks whether an existing `.CT` cheat table still works after a game update, and patches what it can without human intervention.
+
+### What it does
+
+1. **Parses** any `.CT` file — extracts every `aobscanregion`, `assert`, and symbol-based pointer entry from the embedded assembler scripts.
+2. **Connects** to the CE bridge over the named pipe and launches the Mono data collector.
+3. **Verifies** each pattern against the live process — resolves the Mono method symbol, reads memory, and searches for the byte sequence.
+4. **Diagnoses** failures into actionable categories:
+
+| Status | Meaning | Auto-fixable? |
+|--------|---------|:---:|
+| `OK` | Pattern found within scan range | — |
+| `RANGE MISS` | Pattern present but outside the scan window | Yes |
+| `BYTE CHANGE` | ≥85% of bytes match — struct field shifted | Yes |
+| `PARTIAL` | Some bytes match — structural change | Manual |
+| `NOT FOUND` | No trace of pattern in method | Manual |
+| `NO SYMBOL` | Mono method not resolved | Manual |
+
+5. **Writes** a patched `.updated.CT` with all auto-fixable issues applied (extended ranges, substituted bytes). The original file is never overwritten.
+
+### Usage
+
+Run from the `MCP_Server/` directory with CE running and the bridge loaded:
+
+```bash
+cd MCP_Server
+
+# Check and auto-patch
+python -m ct_updater "C:\path\to\SomeGame.CT"
+
+# Report only, no file output
+python -m ct_updater "C:\path\to\SomeGame.CT" --no-patch
+
+# Show disassembly for broken patterns
+python -m ct_updater "C:\path\to\SomeGame.CT" --verbose
+
+# Skip the ~4 s Mono init if the collector is already running
+python -m ct_updater "C:\path\to\SomeGame.CT" --no-mono
+```
+
+The patched file is written as `SomeGame.updated.CT` alongside the original.
+
+### What still requires manual work
+
+- **`assert()` failures** — the method was recompiled (e.g. 32-bit → 64-bit). The tool flags these clearly but cannot rewrite the hook logic.
+- **`PARTIAL` / `NOT FOUND`** — the surrounding code changed enough that no confident substitution is possible. Use `--verbose` to get a disassembly dump of the method to guide the rewrite.
+- **Pointer offsets** (e.g. `CharacterPtr+22C` for XP) — the tool checks that the base symbol resolves but does not walk the full pointer chain. Verify in-game after enabling.
+
+---
+
 ## Project Structure
 
 ```
@@ -298,12 +350,18 @@ README.md                               # User-facing documentation
 MCP_Server/
 ├── mcp_cheatengine.py                  # Python MCP Server (FastMCP)
 ├── ce_mcp_bridge.lua                   # Cheat Engine Lua Bridge
-└── test_mcp.py                         # Test Suite
+├── test_mcp.py                         # Test Suite
+└── ct_updater/                         # CT Table Auto-Updater tool
+    ├── __main__.py                     #   Entry point  (python -m ct_updater)
+    ├── bridge.py                       #   Named pipe client (CE bridge connection)
+    ├── parser.py                       #   .CT XML + assembler script parser
+    ├── analyzer.py                     #   Pattern verification and diff logic
+    └── patcher.py                      #   Auto-fix writer (.updated.CT output)
 
 AI_Context/
 ├── BATCH_WORKER_BRIEFING.md            # Parallel-worker task specifications (v12 overhaul)
 ├── MCP_Bridge_Command_Reference.md     # MCP Commands reference
-├── CE_LUA_Documentation.md             # Full CheatEngine 7.6 official documentation
+├── CE_LUA_Documentation.md            # Full CheatEngine 7.6 official documentation
 └── AI_Guide_MCP_Server_Implementation.md  # Full technical documentation for AI agent
 ```
 
