@@ -91,6 +91,8 @@ import socket
 import struct
 import time
 import math
+import ctypes
+import itertools
 import threading
 import traceback
 
@@ -114,12 +116,24 @@ except ImportError:
     win32file = None
     pywintypes = None
 
+try:
+    import win32pipe
+except ImportError:
+    win32pipe = None
+
 # Restore stdout for MCP usage after imports are complete
 sys.stdout = _mcp_stdout
 
 # Debug helper - always goes to stderr, never corrupts MCP
 def debug_log(msg):
     print(f"[MCP CE] {msg}", file=sys.stderr, flush=True)
+
+# Capability profile / tool groups (CE_MCP_PROFILE, CE_MCP_ALLOW, CE_MCP_DENY, CE_MCP_TOOLSET); see tool_policy.py
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:                     # a sibling module must import however this file is launched (script, importlib, tests)
+    sys.path.insert(0, _here)
+import tool_policy
+POLICY = tool_policy.policy_from_env(os.environ)
 
 # Helper to format results as proper JSON strings for MCP tools
 def format_result(result):
@@ -161,6 +175,22 @@ def _parse_timeout_seconds(raw_value):
 CE_MCP_TIMEOUT_SECONDS = _parse_timeout_seconds(os.environ.get("CE_MCP_TIMEOUT"))
 
 
+def _parse_connect_wait(raw_value):
+    """Parse CE_MCP_CONNECT_WAIT seconds: how long connect() keeps retrying a busy/re-created pipe."""
+    if raw_value is None:
+        return 2.0
+    try:
+        wait = float(raw_value)
+    except (TypeError, ValueError):
+        return 2.0
+    if not math.isfinite(wait) or wait < 0:
+        return 2.0
+    return wait
+
+
+CE_MCP_CONNECT_WAIT = _parse_connect_wait(os.environ.get("CE_MCP_CONNECT_WAIT"))
+
+
 def _parse_transport(raw_value):
     """Parse CE_MCP_TRANSPORT; defaults to Windows named pipe."""
     transport = (raw_value or "pipe").strip().lower()
@@ -197,9 +227,65 @@ CE_MCP_PORT = _parse_tcp_port(os.environ.get("CE_MCP_PORT"))
 # BRIDGE CLIENTS
 # ============================================================================
 
+# Methods that only read state. If the outcome of one of these is unknown (timeout
+# or dropped connection after the request was sent) it is safe to send it again.
+# Everything else is NEVER re-sent once it may have reached Cheat Engine: the first
+# attempt can still be running there (write_memory, auto_assemble, create_thread,
+# inject_dll, show_message, ...), so a blind retry could execute it twice.
+_IDEMPOTENT_PREFIXES = (
+    "get_", "read_", "list_", "enum_", "find_", "is_", "aob_scan", "persistent_scan_get_",
+    "md5_", "checksum_", "disassemble", "analyze_", "validate_", "dbk_get_",
+    "pe_", "va_to_", "rva_to_", "rebase_", "export_", "diff_",
+)
+_IDEMPOTENT_EXACT = frozenset({
+    "ping", "bridge_status", "search_string", "generate_signature", "dissect_structure", "file_exists",
+    "compare_memory", "assemble_instruction", "auto_assemble_check", "in_main_thread",
+    "list_snapshots", "snapshot_region", "delete_snapshot",
+})
+# Look read-only by name but consume or change state.
+_NOT_IDEMPOTENT = frozenset({"get_breakpoint_hits", "read_region_from_file"})
+
+
+def is_idempotent(method):
+    if method in _NOT_IDEMPOTENT:
+        return False
+    return method in _IDEMPOTENT_EXACT or method.startswith(_IDEMPOTENT_PREFIXES)
+
+
+# JSON-RPC error code -> bridge error_code enum
+_RPC_ERROR_CODES = {-32700: "INVALID_PARAMS", -32600: "INVALID_PARAMS", -32601: "NOT_FOUND"}
+
+ERROR_FILE_NOT_FOUND = 2
+ERROR_PIPE_BUSY = 231
+
+
+def _cancel_pending_io(handle):
+    """Cancel I/O other threads have pending on a pipe handle (kernel32!CancelIoEx)."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CancelIoEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.CancelIoEx.restype = ctypes.c_int
+        ok = kernel32.CancelIoEx(int(handle), None)
+        # ERROR_NOT_FOUND (1168) just means there was nothing pending
+        return bool(ok) or ctypes.get_last_error() == 1168
+    except Exception:
+        return False
+
+
+def _close_handle_quietly(handle):
+    try:
+        win32file.CloseHandle(handle)
+    except Exception:
+        pass
+
+
 class CEBridgeClient:
     def __init__(self):
         self.timeout_seconds = CE_MCP_TIMEOUT_SECONDS
+        self._ids = itertools.count(1)
+        self._request_sent = False   # set once the full request frame has been written
+        self._ever_connected = False
+        self.last_connect_error = ""
 
     @property
     def connected(self):
@@ -222,7 +308,8 @@ class CEBridgeClient:
         if resp_len > MAX_RESPONSE_SIZE_BYTES:
             raise ConnectionError(f"Response too large: {resp_len} bytes")
         try:
-            return json.loads(resp_body_buffer.decode('utf-8'))
+            # errors="replace": one bad byte in e.g. a window caption must not fail the whole reply
+            return json.loads(resp_body_buffer.decode('utf-8', errors='replace'))
         except json.JSONDecodeError as exc:
             raise ConnectionError("Invalid JSON received from CE") from exc
 
@@ -256,40 +343,76 @@ class CEBridgeClient:
 
         return result_holder["response"]
 
-    def send_command(self, method, params=None):
-        """Send command to CE Bridge with auto-reconnection on failure."""
-        max_retries = 2
+    def _not_reachable(self):
+        detail = f" ({self.last_connect_error})" if self.last_connect_error else ""
+        return ConnectionError(f"{self._endpoint_description()} is not reachable{detail}.")
+
+    def send_command(self, method, params=None, idempotent=None):
+        """Send command to CE Bridge, reconnecting once on failure.
+
+        Read-only commands are re-sent after a failed attempt. Commands that change
+        state are re-sent only if the request provably never left this process
+        (connect/write failure); otherwise the error says the outcome is unknown.
+        """
+        denied = POLICY.check(method, params)
+        if denied:
+            return denied
+        max_attempts = 2
+        retry_after_send = is_idempotent(method) if idempotent is None else idempotent
         last_error = None
-        
-        for attempt in range(max_retries):
+
+        for attempt in range(max_attempts):
             if not self.connected:
                 if not self.connect():
-                    raise ConnectionError(f"{self._endpoint_description()} is not reachable.")
+                    raise self._not_reachable()
 
+            request_id = next(self._ids)
             request = {
                 "jsonrpc": "2.0",
                 "method": method,
                 "params": params or {},
-                "id": int(time.time() * 1000)
+                "id": request_id
             }
-            
+            self._request_sent = False
+
             try:
                 req_json = json.dumps(request).encode('utf-8')
                 response = self._exchange_with_timeout(req_json, method)
-                
+
+                reply_id = response.get("id") if isinstance(response, dict) else None
+                if reply_id is not None and reply_id != request_id:
+                    raise ConnectionError(
+                        f"Out-of-sync reply from CE (expected id {request_id}, got {reply_id})."
+                    )
+
                 if 'error' in response:
-                    return {"success": False, "error": str(response['error'])}
+                    err = response['error']
+                    if isinstance(err, dict):
+                        message, rpc_code = err.get('message', err), err.get('code')
+                    else:
+                        message, rpc_code = err, None
+                    return {
+                        "success": False,
+                        "error": str(message),
+                        "error_code": _RPC_ERROR_CODES.get(rpc_code, "INTERNAL_ERROR"),
+                    }
                 if 'result' in response:
                     return response['result']
-                    
+
                 return response
 
             except (OSError, ConnectionError, TimeoutError) as e:
                 self.close()
                 last_error = self._communication_error(e)
-                if attempt < max_retries - 1:
+                if self._request_sent and not retry_after_send:
+                    raise ConnectionError(
+                        f"Command '{method}' was sent to Cheat Engine but no reply was received; "
+                        f"it may or may not have run. Check the target's state before repeating it. "
+                        f"Cause: {last_error}"
+                    ) from last_error
+                if attempt < max_attempts - 1:
                     continue  # Retry
-        
+
         # All retries failed
         if last_error:
             raise last_error
@@ -314,20 +437,56 @@ class CENamedPipeBridgeClient(CEBridgeClient):
         return self.handle is not None
 
     def connect(self):
-        """Attempts to connect to the CE Named Pipe."""
-        try:
-            self.handle = win32file.CreateFile(
-                PIPE_NAME,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                0,
-                None,
-                win32file.OPEN_EXISTING,
-                0,
-                None
-            )
-            return True
-        except pywintypes.error:
-            return False
+        """Attempts to connect to the CE Named Pipe.
+
+        The bridge destroys and re-creates its pipe after every client disconnect, so
+        a missing pipe right after a drop is normal for ~50 ms; and ERROR_PIPE_BUSY means
+        the single pipe instance is momentarily taken. Retry within CE_MCP_CONNECT_WAIT
+        in those cases instead of failing on the first attempt. A pipe that has never
+        existed (CE not running) fails fast.
+        """
+        start = time.monotonic()
+        while True:
+            try:
+                self.handle = win32file.CreateFile(
+                    PIPE_NAME,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None
+                )
+                self._ever_connected = True
+                self.last_connect_error = ""
+                return True
+            except pywintypes.error as exc:
+                code = exc.winerror
+                if code == ERROR_PIPE_BUSY:
+                    self.last_connect_error = (
+                        "pipe is busy: another MCP server/client is already connected to Cheat Engine"
+                    )
+                elif code == ERROR_FILE_NOT_FOUND:
+                    self.last_connect_error = (
+                        "pipe not found: is Cheat Engine running with ce_mcp_bridge.lua loaded?"
+                    )
+                else:
+                    self.last_connect_error = f"{exc.strerror} (winerror {code})"
+
+                budget = CE_MCP_CONNECT_WAIT
+                if code == ERROR_FILE_NOT_FOUND and not self._ever_connected:
+                    budget = min(budget, 0.25)
+                remaining = budget - (time.monotonic() - start)
+                if remaining <= 0:
+                    return False
+
+                if code == ERROR_PIPE_BUSY and win32pipe is not None:
+                    try:
+                        win32pipe.WaitNamedPipe(PIPE_NAME, max(1, int(min(remaining, 0.5) * 1000)))
+                    except pywintypes.error:
+                        pass
+                else:
+                    time.sleep(min(0.05, remaining))
 
     def _endpoint_description(self):
         return "Cheat Engine Bridge (v12/v99 pipe)"
@@ -337,12 +496,13 @@ class CENamedPipeBridgeClient(CEBridgeClient):
             return ConnectionError(f"Pipe communication failed: {error}")
         return error
 
-    def _read_exact(self, size):
+    @staticmethod
+    def _read_exact(handle, size):
         chunks = []
         remaining = size
         while remaining > 0:
             try:
-                chunk = win32file.ReadFile(self.handle, remaining)[1]
+                chunk = win32file.ReadFile(handle, remaining)[1]
             except pywintypes.error as exc:
                 raise ConnectionError(f"Pipe communication failed: {exc}") from exc
             if not chunk:
@@ -353,27 +513,41 @@ class CENamedPipeBridgeClient(CEBridgeClient):
 
     def _exchange_once(self, req_json):
         """Send one framed request to the named pipe and parse one response."""
+        # Bind the handle once: after a timeout close() + reconnect, this (abandoned)
+        # worker must never read from the NEW connection's handle.
+        handle = self.handle
+        if handle is None:
+            raise ConnectionError("Pipe is not connected.")
         header = struct.pack('<I', len(req_json))
         try:
-            win32file.WriteFile(self.handle, header)
-            win32file.WriteFile(self.handle, req_json)
+            win32file.WriteFile(handle, header)
+            win32file.WriteFile(handle, req_json)
         except pywintypes.error as exc:
             raise ConnectionError(f"Pipe communication failed: {exc}") from exc
+        self._request_sent = True
 
-        resp_header_buffer = self._read_exact(4)
+        resp_header_buffer = self._read_exact(handle, 4)
         resp_len = struct.unpack('<I', resp_header_buffer)[0]
         if resp_len > MAX_RESPONSE_SIZE_BYTES:
             raise ConnectionError(f"Response too large: {resp_len} bytes")
-        resp_body_buffer = self._read_exact(resp_len)
+        resp_body_buffer = self._read_exact(handle, resp_len)
         return self._decode_response(resp_header_buffer, resp_body_buffer)
 
     def close(self):
-        if self.handle:
+        handle, self.handle = self.handle, None
+        if not handle:
+            return
+        # A worker thread may be blocked in a synchronous ReadFile on this handle (after a
+        # timeout). CloseHandle would then block behind it, so first cancel its pending I/O.
+        # pywin32 has no CancelIoEx, hence ctypes. If cancelling fails, close on a helper
+        # thread rather than risk hanging the caller.
+        if _cancel_pending_io(handle):
             try:
-                win32file.CloseHandle(self.handle)
+                win32file.CloseHandle(handle)
             except Exception:
                 pass
-            self.handle = None
+        else:
+            threading.Thread(target=_close_handle_quietly, args=(handle,), daemon=True).start()
 
 
 class CETcpBridgeClient(CEBridgeClient):
@@ -393,8 +567,11 @@ class CETcpBridgeClient(CEBridgeClient):
             connect_timeout = self.timeout_seconds if self.timeout_seconds is not None else None
             self.sock = socket.create_connection((self.host, self.port), timeout=connect_timeout)
             self.sock.settimeout(connect_timeout)
+            self._ever_connected = True
+            self.last_connect_error = ""
             return True
-        except OSError:
+        except OSError as exc:
+            self.last_connect_error = str(exc)
             self.close()
             return False
 
@@ -406,11 +583,12 @@ class CETcpBridgeClient(CEBridgeClient):
             return ConnectionError(f"TCP relay communication failed: {error}")
         return error
 
-    def _read_exact(self, size):
+    @staticmethod
+    def _read_exact(sock, size):
         chunks = []
         remaining = size
         while remaining > 0:
-            chunk = self.sock.recv(remaining)
+            chunk = sock.recv(remaining)
             if not chunk:
                 raise ConnectionError("Connection closed while reading from TCP relay.")
             chunks.append(chunk)
@@ -419,23 +597,31 @@ class CETcpBridgeClient(CEBridgeClient):
 
     def _exchange_once(self, req_json):
         """Send one framed request to the TCP relay and parse one response."""
+        sock = self.sock   # bound once, see CENamedPipeBridgeClient._exchange_once
+        if sock is None:
+            raise ConnectionError("Socket is not connected.")
         header = struct.pack('<I', len(req_json))
-        self.sock.sendall(header + req_json)
+        sock.sendall(header + req_json)
+        self._request_sent = True
 
-        resp_header_buffer = self._read_exact(4)
+        resp_header_buffer = self._read_exact(sock, 4)
         resp_len = struct.unpack('<I', resp_header_buffer)[0]
         if resp_len > MAX_RESPONSE_SIZE_BYTES:
             raise ConnectionError(f"Response too large: {resp_len} bytes")
-        resp_body_buffer = self._read_exact(resp_len)
+        resp_body_buffer = self._read_exact(sock, resp_len)
         return self._decode_response(resp_header_buffer, resp_body_buffer)
 
     def close(self):
-        if self.sock:
+        sock, self.sock = self.sock, None
+        if sock:
             try:
-                self.sock.close()
+                sock.shutdown(socket.SHUT_RDWR)   # wakes a worker blocked in recv()
             except OSError:
                 pass
-            self.sock = None
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def _create_bridge_client():
@@ -508,9 +694,16 @@ def get_rtti_classname(address: str) -> str:
 # --- MEMORY READING ---
 
 @mcp.tool()
-def read_memory(address: str, size: int = 256) -> str:
-    """Read raw bytes from memory."""
-    return format_result(ce_client.send_command("read_memory", {"address": address, "size": size}))
+def read_memory(address: str, size: int = 256, format: str = "hex") -> str:
+    """Read raw bytes from memory.
+
+    Args:
+        address: Address (hex string or symbol).
+        size: Number of bytes (max 1 MB).
+        format: 'hex' (default, "48 65 6C ..."), 'base64' (smallest for big reads),
+                'array' (list of ints) or 'both' (hex + array; 3x the tokens, legacy behaviour).
+    """
+    return format_result(ce_client.send_command("read_memory", {"address": address, "size": size, "format": format}))
 
 @mcp.tool()
 def read_integer(address: str, type: str = "dword") -> str:
@@ -693,12 +886,21 @@ def get_instruction_info(address: str) -> str:
 
 @mcp.tool()
 def find_function_boundaries(address: str, max_search: int = 4096) -> str:
-    """Attempt to find the start and end of a function containing the address."""
+    """Find the start and end of the function containing the address.
+
+    x64 modules: exact boundaries from the exception table (.pdata), reported with method="pdata", exact=true
+    (also the exception handler address, and `fragment` when the address is in a split/cold part of a function).
+    Anything else (x86, leaf functions without unwind data, JIT code): prologue/ret heuristic, method="heuristic".
+    """
     return format_result(ce_client.send_command("find_function_boundaries", {"address": address, "max_search": max_search}))
 
 @mcp.tool()
 def analyze_function(address: str) -> str:
-    """Analyze a function to find all CALL instructions output (calls made by this function)."""
+    """Analyze a function to find all CALL instructions (calls made by this function).
+
+    When .pdata knows the function (x64) the whole exact range is walked, including code after the first `ret`;
+    otherwise it stops at the first `ret` found by the heuristic. `method` says which was used.
+    """
     return format_result(ce_client.send_command("analyze_function", {"address": address}))
 
 @mcp.tool()
@@ -735,25 +937,55 @@ def dissect_structure(address: str, size: int = 256) -> str:
 # --- DEBUGGING & BREAKPOINTS ---
 
 @mcp.tool()
-def set_breakpoint(address: str, id: str = None, capture_registers: bool = True, capture_stack: bool = False, stack_depth: int = 16) -> str:
-    """Set a hardware execution breakpoint. Non-breaking/Logging only."""
-    return format_result(ce_client.send_command("set_breakpoint", {
-        "address": address, 
-        "id": id,
-        "capture_registers": capture_registers,
-        "capture_stack": capture_stack,
-        "stack_depth": stack_depth
-    }))
+def set_breakpoint(address: str, id: str = None, capture_registers: bool = True, capture_stack: bool = False, stack_depth: int = 16,
+                   condition: str = "", mode: str = "log", max_hits: int = 0, halt_timeout_ms: int = 0, inspect: list[dict] = None) -> str:
+    """Set a hardware execution breakpoint (a debug register: invisible to most anti-cheat, at most 4 at a time).
+
+    By default it only LOGS: every hit records registers (and optionally the stack) and the thread keeps running;
+    read them with get_breakpoint_hits.
+
+    Args:
+        address: Address or symbol.
+        id: Name for the breakpoint (default: the address; a clash gets a _2 suffix).
+        capture_registers / capture_stack / stack_depth: What to record per hit.
+        condition: Only record hits where this expression is true, e.g. "RAX == 5", "u32(RDX+8) == 0x1234 and RCX ~= 0",
+                   "f32(RSP+0x20) > 100". It sees the registers (RAX..R15, RIP, EFLAGS; x86: EAX..), the memory readers
+                   u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 ptr (return nil for unreadable memory), hits() (matched so far),
+                   seen() (all hits) and abs/min/max/floor. Nothing else (no os/io/load), and it runs under an
+                   instruction budget so it cannot hang the target. A condition that errors still records the hit,
+                   flagged with `condition_error`, and is switched off after 5 failures.
+        mode: "log" (default) or "break": leave the thread STOPPED for inspection. Use get_halted_state to look at it
+              and debug_continue (run / step_into / step_over) to resume. A watchdog resumes it by itself after
+              halt_timeout_ms so a vanished client can never leave the game frozen.
+        max_hits: Detach automatically after this many matching hits (0 = unlimited).
+        halt_timeout_ms: Watchdog timeout for mode "break" (default 10000, max 300000).
+        inspect: For mode "break": [{"expr": "RDX+0x10", "size": 32}] memory to capture at the moment of the hit
+                 (the address is an expression like a condition; at most 8 entries, 256 bytes each).
+    """
+    return format_result(ce_client.send_command("set_breakpoint", _params(
+        address=address, id=id, capture_registers=capture_registers, capture_stack=capture_stack, stack_depth=stack_depth,
+        condition=condition, mode=mode if mode != "log" else None, max_hits=max_hits or None,
+        halt_timeout_ms=halt_timeout_ms or None, inspect=inspect)))
 
 @mcp.tool()
-def set_data_breakpoint(address: str, id: str = None, access_type: str = "w", size: int = 4) -> str:
-    """Set a hardware data breakpoint (watchpoint). Types: 'r' (read), 'w' (write), 'rw' (access)."""
-    return format_result(ce_client.send_command("set_data_breakpoint", {
-        "address": address, 
-        "id": id,
-        "access_type": access_type,
-        "size": size
-    }))
+def set_data_breakpoint(address: str, id: str = None, access_type: str = "w", size: int = 4,
+                        condition: str = "", mode: str = "log", max_hits: int = 0, halt_timeout_ms: int = 0, inspect: list[dict] = None) -> str:
+    """Set a hardware data breakpoint (watchpoint): finds what writes/accesses a value.
+
+    Args:
+        address: Address to watch. It must be aligned to `size`.
+        access_type: 'w' (writes, default) or 'rw' (reads and writes); 'r' is an approximation because x86 debug
+                     registers cannot watch reads only: it watches both and drops hits where the value changed.
+        size: 1, 2, 4 (default) or 8 bytes.
+        condition / mode / max_hits / halt_timeout_ms / inspect: as for set_breakpoint.
+
+    Each hit records the value (read with the watched size), previous_value, value_changed (a write of the same value
+    shows value_changed=false), the registers and the instruction that touched it.
+    """
+    return format_result(ce_client.send_command("set_data_breakpoint", _params(
+        address=address, id=id, access_type=access_type, size=size,
+        condition=condition, mode=mode if mode != "log" else None, max_hits=max_hits or None,
+        halt_timeout_ms=halt_timeout_ms or None, inspect=inspect)))
 
 @mcp.tool()
 def remove_breakpoint(id: str) -> str:
@@ -1939,6 +2171,8 @@ def debug_continue(method: str = "run") -> str:
 
     method: one of 'run' (co_run), 'step_into' (co_stepinto), 'step_over' (co_stepover).
     Requires the debugger to be attached. Returns {success}.
+    Resumes a thread stopped by a mode="break" breakpoint ("run" ends the stop; a step keeps it under bridge
+    control, see get_halted_state).
     """
     return format_result(ce_client.send_command("debug_continue", {"method": method}))
 
@@ -2337,6 +2571,627 @@ def get_opened_process_handle() -> str:
     return format_result(ce_client.send_command("get_opened_process_handle"))
 
 # >>> END UNIT-07 <<<
+
+# >>> BEGIN UNIT-25 Operations: bridge_status, read_struct, batch, async jobs <<<
+
+MAX_WAIT_FOR_JOB_SECONDS = 90.0   # keep below typical MCP host tool timeouts (e.g. 120 s)
+
+
+@mcp.tool()
+def bridge_status() -> str:
+    """Health/diagnostics report for the Cheat Engine bridge. Works even when CE is unreachable.
+
+    Returns bridge version, uptime, attached process (pid/name/arch), DBK/DBVM state, breakpoint and
+    hardware-slot usage, async job counts, request statistics (count, errors, slowest/last command),
+    the 'Query memory region routines' safety setting (best effort) and a `warnings` list.
+    `python_side` shows this MCP server's own transport, timeouts and last connection error. When CE
+    cannot be reached the result has reachable=false plus a `hint` explaining the likely cause
+    (CE not running, bridge script not loaded, or another MCP client already holding the pipe).
+    """
+    python_side = {
+        "transport": CE_MCP_TRANSPORT,
+        "endpoint": PIPE_NAME if CE_MCP_TRANSPORT == "pipe" else f"{CE_MCP_HOST}:{CE_MCP_PORT}",
+        "timeout_seconds": CE_MCP_TIMEOUT_SECONDS,
+        "connect_wait_seconds": CE_MCP_CONNECT_WAIT,
+        "python": sys.version.split()[0],
+        "server_pid": os.getpid(),
+        "ever_connected": ce_client._ever_connected,
+    }
+    try:
+        result = ce_client.send_command("bridge_status")
+    except (OSError, ConnectionError, TimeoutError) as exc:
+        reason = ce_client.last_connect_error or ""
+        python_side["last_connect_error"] = reason
+        if "busy" in reason:
+            hint = ("Another MCP server/client already holds the bridge's single pipe (for example Claude Desktop and "
+                    "Claude Code both configured with this bridge). Close the other client first.")
+        elif "not found" in reason:
+            hint = ("The pipe does not exist: start Cheat Engine and load ce_mcp_bridge.lua "
+                    "(its Lua console should print 'MCP Server Listening').")
+        else:
+            hint = "Cheat Engine did not answer; see `error` and check CE's Lua console."
+        return format_result({
+            "success": False, "reachable": False, "error": str(exc),
+            "error_code": "CE_API_UNAVAILABLE", "hint": hint, "python_side": python_side,
+        })
+    if isinstance(result, dict):
+        result["reachable"] = True
+        result["python_side"] = python_side
+    return format_result(result)
+
+
+@mcp.tool()
+def read_struct(address: str, fields: list[dict]) -> str:
+    """Read several typed fields of a structure with ONE memory read (much cheaper than many read_integer calls).
+
+    Args:
+        address: Address of the structure (hex string or symbol).
+        fields: List of {"name": str, "type": str, "offset": int (optional), "size": int (optional)}.
+                `offset` defaults to the end of the previous field (packed, no padding), so give explicit
+                offsets for real structs. Types: i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr bool bytes
+                cstring wstring (aliases: byte word dword qword float double int short pointer string utf16).
+                `size` is the byte length for bytes/cstring and the character count for wstring.
+
+    Returns JSON with: success, address, span, arch, fields[{name, type, offset, value, hex?, error?}].
+    u64 values above 2^63 and all pointers are returned as hex strings. A field that cannot be read gets
+    an `error` instead of failing the whole call. Limits: 512 fields, 64 KB span.
+    """
+    return format_result(ce_client.send_command("read_struct", {"address": address, "fields": fields}))
+
+
+@mcp.tool()
+def batch_commands(requests: list[dict], stop_on_error: bool = False) -> str:
+    """Run several bridge commands in ONE round trip (and one slot on CE's main thread).
+
+    Args:
+        requests: List of {"method": "<tool name>", "params": {...}} using the same names/params as the
+                  individual tools, e.g. [{"method": "read_integer", "params": {"address": "0x1000"}}].
+                  Max 100; nesting batch_commands is not allowed.
+        stop_on_error: Stop at the first failing request (default: run all).
+
+    Returns JSON with: success, requested, executed, failed, results[] (one result object per request, in order).
+    The call is retried automatically after a connection problem only if every request is read-only.
+    """
+    problems = []
+    for i, req in enumerate(requests):
+        method = req.get("method") if isinstance(req, dict) else None
+        if not isinstance(method, str) or not method:
+            problems.append(f"requests[{i}] needs a 'method'")
+        elif method == "batch":
+            problems.append(f"requests[{i}]: batch cannot be nested")
+    if problems:
+        return format_result({"success": False, "error": "; ".join(problems), "error_code": "INVALID_PARAMS"})
+    all_read_only = all(is_idempotent(req["method"]) for req in requests)
+    return format_result(ce_client.send_command(
+        "batch", {"requests": requests, "stop_on_error": stop_on_error}, idempotent=all_read_only))
+
+
+@mcp.tool()
+def start_job(kind: str, params: dict = None) -> str:
+    """Start a long-running operation in the background and return immediately with a job_id.
+
+    CE stays responsive and the MCP call cannot time out. Poll with get_job (or block with wait_for_job),
+    then fetch the data with get_job_result. Up to 4 jobs run at once.
+
+    Args:
+        kind: 'scan_all' | 'next_scan' | 'aob_scan' | 'find_references' | 'find_call_references' | 'find_xrefs' |
+              'rtti_scan' | 'find_string_refs' | 'find_code_caves' | 'find_pointer_path'.
+        params: The same parameters the matching blocking tool takes, e.g.
+                scan_all {"value": "100", "type": "dword"}, aob_scan {"pattern": "48 8B ?? 05", "limit": 100},
+                find_references {"address": "0x140001000"}, find_call_references {"address": "game.exe+1234"},
+                find_xrefs {"address": "game.exe+1234", "kinds": "call,jmp"}.
+
+    scan_all/next_scan own the shared scan session: while one runs, scan_all, next_scan and
+    get_scan_results answer error_code BUSY. Cancelling a next_scan discards the scan session.
+    """
+    return format_result(ce_client.send_command("start_job", {"kind": kind, "params": params or {}}))
+
+
+@mcp.tool()
+def get_job(job_id: str) -> str:
+    """Status of a job: state (running|done|failed|cancelled), phase, progress {current,total,percent},
+    elapsed_seconds, and a small result_summary once done. Use get_job_result for the full data."""
+    return format_result(ce_client.send_command("get_job", {"job_id": job_id}))
+
+
+@mcp.tool()
+def get_job_result(job_id: str, offset: int = 0, limit: int = 100) -> str:
+    """Result of a finished job, shaped like the blocking tool's reply (e.g. count for scans; total/offset/
+    limit/returned + addresses|references|callers for list results). `offset`/`limit` page through lists.
+    A job that is still running answers error_code BUSY."""
+    return format_result(ce_client.send_command("get_job_result", {"job_id": job_id, "offset": offset, "limit": limit}))
+
+
+@mcp.tool()
+def wait_for_job(job_id: str, timeout_seconds: float = 30.0, poll_interval: float = 0.5) -> str:
+    """Wait (polling get_job) until a job leaves the 'running' state or the timeout passes.
+
+    Returns the final get_job status, or the latest status with timed_out=true if it is still running
+    (just call again). timeout_seconds is capped at 90. CE is not blocked while waiting.
+    """
+    timeout = max(0.0, min(float(timeout_seconds), MAX_WAIT_FOR_JOB_SECONDS))
+    poll = max(0.1, min(float(poll_interval), 5.0))
+    deadline = time.monotonic() + timeout
+    while True:
+        status = ce_client.send_command("get_job", {"job_id": job_id})
+        if not isinstance(status, dict) or not status.get("success") or status.get("state") != "running":
+            return format_result(status)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            status["timed_out"] = True
+            status["hint"] = "Job is still running; call wait_for_job or get_job again."
+            return format_result(status)
+        time.sleep(min(poll, remaining))
+
+
+@mcp.tool()
+def cancel_job(job_id: str) -> str:
+    """Cancel a running job and free its resources. Cancelling a next_scan discards the active scan
+    session (run scan_all again). Cancelling a finished job is a harmless no-op."""
+    return format_result(ce_client.send_command("cancel_job", {"job_id": job_id}))
+
+
+@mcp.tool()
+def list_jobs() -> str:
+    """List tracked jobs (running ones plus the 20 most recent finished) with their status."""
+    return format_result(ce_client.send_command("list_jobs"))
+
+# >>> END UNIT-25 <<<
+
+# >>> BEGIN UNIT-26 Analysis: PE/modules, address translation, RTTI, string refs, code caves, pointer paths, snapshots <<<
+
+
+def _params(**kw):
+    """Keyword arguments -> bridge params, dropping None / empty strings so Lua sees 'not given'."""
+    return {k: v for k, v in kw.items() if v is not None and v != ""}
+
+
+def _run_job(kind, params, wait_seconds, limit, offset=0):
+    """start_job + wait up to `wait_seconds` + get_job_result. Returns the job id and status if still running."""
+    started = ce_client.send_command("start_job", {"kind": kind, "params": params})
+    if not isinstance(started, dict) or not started.get("success"):
+        return started
+    job_id = started["job_id"]
+    deadline = time.monotonic() + max(0.0, min(float(wait_seconds), MAX_WAIT_FOR_JOB_SECONDS))
+    while True:
+        status = ce_client.send_command("get_job", {"job_id": job_id})
+        if not isinstance(status, dict) or not status.get("success"):
+            return status
+        state = status.get("state")
+        if state == "running":
+            if time.monotonic() >= deadline:
+                status["timed_out"] = True
+                status["hint"] = (f"Still running in the background. Call wait_for_job('{job_id}') and then "
+                                  f"get_job_result('{job_id}') for the data.")
+                return status
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+            continue
+        if state == "done":
+            return ce_client.send_command("get_job_result", {"job_id": job_id, "offset": offset, "limit": limit})
+        return status
+
+
+# ---- PE / modules ---------------------------------------------------------------------------------
+
+@mcp.tool()
+def pe_info(module: str = "") -> str:
+    """Parse a loaded module's PE headers from memory: architecture, entry point, preferred vs actual base
+    (relocated?), sections with rwx flags and addresses, data directories, subsystem, timestamp.
+
+    Args:
+        module: Module name (case-insensitive, substring ok) or an address inside it. Empty = the main module.
+    """
+    return format_result(ce_client.send_command("pe_info", _params(module=module)))
+
+
+@mcp.tool()
+def pe_imports(module: str = "", dll: str = "", offset: int = 0, limit: int = 100) -> str:
+    """List a module's imports: dll, function name (or ordinal + hint), IAT slot address, and the address the
+    IAT currently holds (`resolved`, plus the module that contains it, so you can spot hooked imports).
+
+    Args:
+        module: Module name or address inside it (empty = main module).
+        dll: Only imports from DLLs whose name contains this text.
+        offset, limit: Pagination (default 100 per page).
+    """
+    return format_result(ce_client.send_command("pe_imports", _params(module=module, dll=dll, offset=offset, limit=limit)))
+
+
+@mcp.tool()
+def pe_exports(module: str = "", name_contains: str = "", offset: int = 0, limit: int = 100) -> str:
+    """List a module's exports: name, ordinal, RVA, address and forwarder text for forwarded exports.
+
+    Args:
+        module: Module name or address inside it (empty = main module).
+        name_contains: Case-insensitive name filter.
+        offset, limit: Pagination (default 100 per page).
+    """
+    return format_result(ce_client.send_command("pe_exports", _params(module=module, name_contains=name_contains, offset=offset, limit=limit)))
+
+
+@mcp.tool()
+def pe_tls_callbacks(module: str = "") -> str:
+    """List a module's TLS callbacks (code that runs before the entry point; common in packers and anti-debug).
+    Returns each callback's address, RVA, section and owning module, plus the TLS directory fields."""
+    return format_result(ce_client.send_command("pe_tls_callbacks", _params(module=module)))
+
+
+# ---- address translation / IDA exchange -----------------------------------------------------------
+
+@mcp.tool()
+def va_to_rva(address: str = "", addresses: list[str] = None, ida_image_base: str = "", include_section: bool = True) -> str:
+    """Convert runtime addresses to module + RVA (and section). Give `address` or a list in `addresses`.
+
+    If `ida_image_base` is given (IDA's image base, from IDA's metadata), each result also carries
+    `ida_address` = ida_image_base + rva, i.e. the address to jump to in IDA.
+    Result `expression` is a CE-usable "module+0xRVA" string.
+    """
+    return format_result(ce_client.send_command("va_to_rva", _params(
+        address=address, addresses=addresses, ida_image_base=ida_image_base, include_section=include_section)))
+
+
+@mcp.tool()
+def rva_to_va(module: str = "", rva: str = "", rvas: list[str] = None, ida_image_base: str = "") -> str:
+    """Convert RVAs of a module into runtime addresses (give `rva` or `rvas`; hex strings like "0x1A2B" or numbers).
+    With `ida_image_base` also returns the matching IDA address."""
+    return format_result(ce_client.send_command("rva_to_va", _params(module=module, rva=rva, rvas=rvas, ida_image_base=ida_image_base)))
+
+
+@mcp.tool()
+def rebase_address(address: str = "", addresses: list[str] = None, from_base: str = "", from_module: str = "",
+                   to_base: str = "", to_module: str = "") -> str:
+    """Move addresses between two images loaded at different bases, e.g. an IDA address into the running
+    process: from_base="0x140000000" (IDA image base), to_module="game.exe". Each side is a base address
+    or a module name. Returns the new address and the shared RVA."""
+    return format_result(ce_client.send_command("rebase_address", _params(
+        address=address, addresses=addresses, from_base=from_base, from_module=from_module, to_base=to_base, to_module=to_module)))
+
+
+@mcp.tool()
+def export_names(module: str = "", sources: list[str] = None, format: str = "json", ida_image_base: str = "",
+                 include_types: bool = True) -> str:
+    """Export names for use in IDA: CE registered symbols and/or RTTI vtables of one module.
+
+    Args:
+        module: Module name (empty = main module).
+        sources: any of "symbols" (CE registered symbols inside the module) and "rtti" (vtables found by the last
+                 rtti_scan_module of this module). Default both.
+        format: "json" (entries with rva, name, ida_name, kind) or "idapython" (a ready-to-run IDAPython script that
+                renames and comments each address relative to the loaded image base).
+        ida_image_base: Adds `ida_address` to each entry.
+        include_types: Also return `c_declarations` (vtable/class struct skeletons built from RTTI) that can be fed
+                       to IDA's declare_c_type.
+    """
+    return format_result(ce_client.send_command("export_names", _params(
+        module=module, sources=sources, format=format, ida_image_base=ida_image_base, include_types=include_types)))
+
+
+@mcp.tool()
+def export_structures(name: str = "") -> str:
+    """C declarations for Cheat Engine's structure definitions (all, or the one called `name`), with padding for gaps
+    and a trailing pad up to the declared size. Paste into IDA's Local Types / declare_c_type."""
+    return format_result(ce_client.send_command("export_structures", _params(name=name)))
+
+
+@mcp.tool()
+def import_names(names: list[dict], module: str = "", ida_image_base: str = "", address_is_ida: bool = False,
+                 prefix: str = "", do_not_save: bool = True) -> str:
+    """Register names (e.g. renamed functions from IDA) as CE symbols so they show up in disassembly and can be used
+    in address expressions. At most 5000 per call.
+
+    Args:
+        names: [{"name": "Player::Update", "rva": "0x1A2B30"}, {"name": "x", "address": "0x7FF6..."}].
+               `rva` needs `module`. With address_is_ida=true an `address` is treated as an IDA address and rebased
+               using ida_image_base into `module`.
+        prefix: Prepended to every name.
+        do_not_save: Keep the symbols out of saved cheat tables (default true).
+    """
+    return format_result(ce_client.send_command("import_names", _params(
+        names=names, module=module, ida_image_base=ida_image_base, address_is_ida=address_is_ida or None,
+        prefix=prefix, do_not_save=do_not_save)))
+
+
+# ---- long-running analysis (background jobs; each waits up to wait_seconds, then returns the job id) ----
+
+@mcp.tool()
+def rtti_scan_module(module: str = "", max_vtable_entries: int = 256, wait_seconds: float = 30.0, limit: int = 200, offset: int = 0) -> str:
+    """Find every MSVC RTTI class in a module: class name (demangled + raw), vtable address/RVA, number of virtual
+    functions, this-pointer offset (non-zero = secondary base vtable) and the base-class chain. x64 and x86.
+    Results are cached so export_names can emit them for IDA.
+
+    Runs as a background job. Returns the classes when finished within `wait_seconds`; otherwise returns
+    {state:"running", job_id, progress} - call wait_for_job / get_job_result later.
+    """
+    return format_result(_run_job("rtti_scan", _params(module=module, max_vtable_entries=max_vtable_entries), wait_seconds, limit, offset))
+
+
+@mcp.tool()
+def find_string_refs(text: str = "", address: str = "", module: str = "", wide: bool = False, match: str = "start",
+                     include_data: bool = True, wait_seconds: float = 30.0, limit: int = 100) -> str:
+    """Find the code and data that reference a string.
+
+    Give `text` (looked up in the module's data sections; wide=true for UTF-16) or the string's `address`.
+    `match`: "start" (default, the text must begin a string) or "any" (also mid-string hits).
+    Finds x64 rip-relative `lea reg,[rip+disp]` (how compilers load string addresses), absolute pointers in code
+    (x86 push/mov imm32) and, with include_data, absolute pointers stored in data sections.
+    Each reference has kind (rip_lea | abs_code | abs_data), address, module+RVA expression, section and disassembly.
+    Background job; see rtti_scan_module for the wait/timeout behaviour.
+    """
+    return format_result(_run_job("find_string_refs", _params(
+        text=text, address=address, module=module, wide=wide or None, match=match, include_data=include_data), wait_seconds, limit))
+
+
+@mcp.tool()
+def find_xrefs(address: str, size: int = 1, module: str = "", kinds: str = "", max_results: int = 5000,
+               wait_seconds: float = 30.0, limit: int = 100, offset: int = 0) -> str:
+    """Find everything that references `address` (or the `size` bytes starting there): "who calls this function",
+    "who touches this variable", "which table points at this".
+
+    Finds, in the scanned module(s):
+      call / jmp / jcc  rel32 and short (rel8) branches whose target is in the range
+      rip               x64 rip-relative operands (lea/mov/cmp/call [rip+x] ...); `access` says read | write |
+                        read/write | address (lea) | call | jump
+      abs_code          absolute pointers inside code (x86 push/mov imm32, x64 mov r64,imm64); `address` is the
+                        instruction when one is found and `field_address` the pointer itself
+      abs_data          pointer-aligned absolute pointers in data sections (vtables, pointer tables)
+      rva               32-bit RVAs in data (x64 jump tables); the .pdata exception table is skipped
+    Each reference has address, module+RVA `expression`, section, instruction text and the enclosing function
+    (`function_start`, from .pdata on x64). The result also lists the calling functions with counts (`functions`).
+
+    Args:
+        address: Target address (hex string, symbol or module+offset).
+        size: Treat [address, address+size) as the target - e.g. a whole struct or a function body's first bytes.
+              Absolute pointers inside code are only searched for sizes up to 16.
+        module: Module to scan - a name, "all", or empty for the module that contains `address` (else the main module).
+        kinds: Comma separated subset of call, jmp, jcc, rip, abs, abs_code, abs_data, rva (default: all).
+        max_results: Stop after this many raw hits (default 5000; `truncated` is set when reached).
+
+    Static references only: pointers stored on the heap/stack are not found (use find_pointer_path for those).
+    Background job; see rtti_scan_module for the wait/timeout behaviour.
+    """
+    return format_result(_run_job("find_xrefs", _params(address=address, size=size if size != 1 else None, module=module,
+                                                        kinds=kinds, max_results=max_results if max_results != 5000 else None),
+                                  wait_seconds, limit, offset))
+
+
+@mcp.tool()
+def find_code_caves(module: str = "", byte: int = 204, min_size: int = 16, sections: str = "exec", wait_seconds: float = 30.0, limit: int = 100) -> str:
+    """Find runs of padding bytes (default 0xCC; also 0x00 or 0x90) of at least `min_size` bytes where you can place
+    patches or hooks. `sections`: "exec" (executable sections only, default) or "all". Largest first.
+    Background job; see rtti_scan_module for the wait/timeout behaviour."""
+    return format_result(_run_job("find_code_caves", _params(module=module, byte=byte, min_size=min_size, sections=sections), wait_seconds, limit))
+
+
+@mcp.tool()
+def find_pointer_path(address: str, max_depth: int = 3, max_offset: int = 1024, max_per_level: int = 16,
+                      max_results: int = 100, protection: str = "+W", save_as: str = "", wait_seconds: float = 30.0,
+                      limit: int = 100) -> str:
+    """Find static pointer chains that lead to `address` (a heap/stack value that moves between runs).
+
+    Works backwards: each level runs one memory scan for pointers whose value lies within `max_offset` below the
+    address, keeps the best `max_per_level` non-static holders and repeats, up to `max_depth` levels, until a holder
+    lies inside a module (that module+RVA is the static base). Every chain is re-resolved to verify it reaches the
+    address. Each result has `base` ("module+0xRVA"), `offsets` (outermost first), `expression`
+    ("[[game.exe+0x1234]+0x40]+0x100") and `verified`.
+
+    This is a plain reverse scan, far less thorough than Cheat Engine's pointer scanner; expect a handful of chains,
+    each costing one full memory scan per frontier address (seconds to minutes in big processes).
+
+    Two-run workflow: pass `save_as="hp"` to keep the verified chains in a named set inside the bridge. After the target
+    restarts and you have found the same value again, compare_pointer_paths(target=<new address>, name="hp") keeps only
+    the chains that still reach it (save_as there narrows the set; run it again after a third start). The stored set
+    survives target restarts, not a reload of the bridge script.
+    Background job; see rtti_scan_module for the wait/timeout behaviour, and use cancel_job to stop it.
+    """
+    return format_result(_run_job("find_pointer_path", _params(
+        address=address, max_depth=max_depth, max_offset=max_offset, max_per_level=max_per_level,
+        max_results=max_results, protection=protection, save_as=save_as), wait_seconds, limit))
+
+
+# ---- snapshots ----------------------------------------------------------------------------------------
+
+@mcp.tool()
+def snapshot_region(address: str = "", size: int = 0, name: str = "", module: str = "", section: str = "") -> str:
+    """Save a copy of a memory region (max 64 MB each, 128 MB / 16 snapshots in total) so you can later diff it:
+    take one, change something in the game, take another, then diff_snapshots to see which values changed - without
+    running a first scan over the whole process. Give address+size, or module+section (e.g. module="game.exe",
+    section=".data"). Unreadable pages are zero-filled and reported in `unreadable_bytes`. Re-using a name replaces it."""
+    return format_result(ce_client.send_command("snapshot_region", _params(address=address, size=size or None, name=name, module=module, section=section)))
+
+
+@mcp.tool()
+def list_snapshots() -> str:
+    """List saved snapshots (name, address, size, unreadable bytes) and the memory they use."""
+    return format_result(ce_client.send_command("list_snapshots"))
+
+
+@mcp.tool()
+def delete_snapshot(name: str = "", all: bool = False) -> str:
+    """Delete one snapshot by name, or all of them with all=true."""
+    return format_result(ce_client.send_command("delete_snapshot", _params(name=name, all=all or None)))
+
+
+@mcp.tool()
+def diff_snapshots(snapshots: list[str], pattern: str = "", unit: int = 4, offset: int = 0, length: int = 0,
+                   merge_gap: int = 0, limit: int = 200) -> str:
+    """Compare 2+ snapshots of the same region ("live" may be used for the current memory) and list the units that
+    behave as expected - the 'unknown value' workflow without scans.
+
+    Args:
+        snapshots: Names in time order, e.g. ["before", "after_hit", "after_heal"].
+        pattern: One character per consecutive pair: C = must have changed, U = must be unchanged, ? = don't care.
+                 Default: all C. ["a","b","c"] with "CU" = changed between a and b, then stable (b == c).
+        unit: Compare in 1, 2, 4 (default) or 8 byte units; 4 also shows float views, 8 double views.
+        offset, length: Restrict to a sub-range of the region (bytes).
+        merge_gap: Adjacent matches closer than this many bytes are merged in `groups` (default = unit).
+        limit: Max matches returned (total_matches always counts all).
+
+    Returns total_matches, matches[{address, offset, old, new, values?, old_float/new_float...}] and
+    groups[{address, offset, size, units}] that point to likely fields.
+    """
+    return format_result(ce_client.send_command("diff_snapshots", _params(
+        snapshots=snapshots, pattern=pattern, unit=unit, offset=offset or None, length=length or None,
+        merge_gap=merge_gap or None, limit=limit)))
+
+# >>> END UNIT-26 <<<
+
+# >>> BEGIN UNIT-27 Functions (.pdata), struct recovery, breakpoint control <<<
+
+@mcp.tool()
+def pe_functions(module: str = "", address: str = "", offset: int = 0, limit: int = 100, include_unwind: bool = False) -> str:
+    """x64 function table (.pdata): every function with unwind data, or the exact function containing `address`.
+
+    With `address`: begin/end/size, `expression` ("module+0xRVA"), the exception handler address and the unwind info
+    (prolog size, frame register, flags EHANDLER/UHANDLER/CHAININFO). Split ("cold") fragments are resolved to their
+    primary function and described in `fragment`. found=false means the address is not covered: leaf functions that
+    never touch the stack have no entry, so use find_function_boundaries for the heuristic fallback.
+    Without `address`: a page of the table (`total`, `offset`, `limit`); include_unwind adds prolog/handler info per entry.
+    The module defaults to the one containing `address`, else the main module. x86 modules have no function table
+    (available=false).
+    """
+    return format_result(ce_client.send_command("pe_functions", _params(
+        module=module, address=address, offset=offset, limit=limit, include_unwind=include_unwind or None)))
+
+@mcp.tool()
+def recover_struct(address: str = "", addresses: list[str] = None, size: int = 0, name: str = "", create: bool = False,
+                   max_vtable_entries: int = 0) -> str:
+    """Recover a class layout from live instance(s) of a polymorphic MSVC class.
+
+    The object's vtable pointer (offset 0) leads to its RTTI: class name, base classes (with subobject offsets) and the
+    virtual function table (each virtual function with its address and, on x64, exact size from .pdata). The fields are
+    inferred by dissecting the memory: pointers (typed as `ClassName *` when they point at another RTTI object, `char *`
+    for text, vfptr for secondary vtables, module+RVA for static data), floats, doubles, ints, inline char buffers and
+    zero gaps. Pass several instances of the SAME class in `addresses` for much better guesses: values that differ are
+    data, the all-zero tail is trimmed and mixed classes are refused.
+
+    Args:
+        address / addresses: Object address(es), 1 to 16 instances of one class.
+        size: Bytes to analyse (default 0x100, max 0x4000; the all-zero tail is dropped).
+        name: Name for the CE structure when create=true (default: the class name).
+        create: Also create the CE structure definition (visible in the Structures list; for strings it sets the byte size).
+        max_vtable_entries: Cap for the virtual function listing (default 64).
+
+    Returns class_name, bases, vtable, fields[{offset,size,kind,type,name,samples}], virtual_functions, c_declaration
+    (ready for IDA's declare_c_type) and, with create, structure_id. This is a heuristic: ints that look like floats (or
+    the reverse), and two floats at an 8-aligned offset, can be misjudged; check the samples.
+    """
+    return format_result(ce_client.send_command("recover_struct", _params(
+        address=address, addresses=addresses, size=size or None, name=name, create=create or None,
+        max_vtable_entries=max_vtable_entries or None)))
+
+@mcp.tool()
+def get_halted_state(stack_depth: int = 16, extend_ms: int = 0) -> str:
+    """State of a thread stopped by a mode="break" breakpoint (or by stepping from one).
+
+    Returns halted=false when nothing is stopped (last_halt says how the last stop ended: resumed, timeout,
+    breakpoint removed, resumed outside the bridge). When halted: fresh registers, the instruction at RIP, the stack,
+    the memory the breakpoint asked to inspect, the hit, and auto_resume_in_seconds (the watchdog countdown).
+    extend_ms postpones the watchdog. Resume with debug_continue(method="run" | "step_into" | "step_over"); after a step,
+    call this again to see the new position.
+    """
+    return format_result(ce_client.send_command("get_halted_state", _params(stack_depth=stack_depth, extend_ms=extend_ms or None)))
+
+# >>> END UNIT-27 <<<
+
+# >>> BEGIN UNIT-30 Pointer path sets: comparing pointer chains across runs <<<
+
+@mcp.tool()
+def compare_pointer_paths(target: str, name: str = "", chains: list[dict] = None, save_as: str = "", near_delta: int = 256,
+                          near_limit: int = 10, offset: int = 0, limit: int = 100) -> str:
+    """Two-run pointer path comparison: which pointer chains from an earlier run still reach the value now?
+
+    Run 1: find_pointer_path(address, save_as="hp") stores the chains of the value you found (or pass chains from
+    Cheat Engine's pointer scanner inline, with `target` = the address they point to in the CURRENT process).
+    Restart the target, find the same value again (scan, or any other way), then call this with `target` = its new
+    address. Every chain is re-resolved from its module+RVA base in the new process; the ones that land exactly on
+    `target` have survived a restart. Run it once more after another restart: the survivors then carry runs=3.
+
+    Args:
+        target: Address of the same value in the current process.
+        name: A stored set (list_pointer_sets). Give this OR chains, not both.
+        chains: Inline [{"base": "game.exe+0x1A2B3C" | address, "offsets": [0x40, 0x10]}]. Offsets are applied after each
+                dereference, outermost first (CE convention). An absolute base inside a module is stored module-relative.
+        save_as: Store the survivors under this name (same name as `name` narrows the set in place). Without it nothing
+                 is stored. An empty result never overwrites a set.
+        near_delta, near_limit: Chains that resolve to within +-near_delta bytes of target are reported as near_misses
+                 with a suggested_offsets correction (a patch that moved the last field); up to near_limit shown.
+        offset, limit: page through the surviving chains.
+
+    Returns hits (survivors), missed (resolved elsewhere), unreadable (a pointer on the way could not be read),
+    module_missing, same_process (true when the target was not restarted since the last run: weaker evidence), and
+    chains[] sorted by runs (most confirmed first), then shortest/smallest. Reads memory only.
+    """
+    return format_result(ce_client.send_command("compare_pointer_paths", _params(
+        target=target, name=name, chains=chains, save_as=save_as, near_delta=near_delta if near_delta != 256 else None,
+        near_limit=near_limit if near_limit != 10 else None, offset=offset or None, limit=limit)))
+
+
+@mcp.tool()
+def list_pointer_sets() -> str:
+    """List the stored pointer chain sets (name, chain_count, runs, history of the runs that produced them)."""
+    return format_result(ce_client.send_command("list_pointer_sets"))
+
+
+@mcp.tool()
+def get_pointer_set(name: str, offset: int = 0, limit: int = 100) -> str:
+    """The chains of a stored set (base, offsets, expression, runs) plus its run history. Feed them to
+    validate_pointer_chains or write them into a cheat table; runs says in how many separate runs a chain reached its value."""
+    return format_result(ce_client.send_command("get_pointer_set", {"name": name, "offset": offset, "limit": limit}))
+
+
+@mcp.tool()
+def drop_pointer_set(name: str = "", all: bool = False) -> str:
+    """Delete one stored pointer set by name, or all of them with all=true."""
+    return format_result(ce_client.send_command("drop_pointer_set", _params(name=name, all=all or None)))
+
+# >>> END UNIT-30 <<<
+
+# >>> BEGIN UNIT-29 Capability profiles and tool groups <<<
+
+ALL_TOOLS = sorted(t.name for t in mcp._tool_manager.list_tools()) + ["policy_info"]
+
+
+@mcp.tool()
+def policy_info(details: bool = False) -> str:
+    """What this server is allowed to do and which tools it lists (CE_MCP_PROFILE / CE_MCP_TOOLSET / CE_MCP_ALLOW / CE_MCP_DENY).
+
+    Use it when a tool you expect is missing or a call comes back PERMISSION_DENIED. The profile is a security setting of
+    the MCP server's environment, not something a client can change: readonly < analysis < patch < full.
+    With details=true the names of the hidden tools are listed per group.
+    """
+    hidden = {"profile": [], "toolset": [], "denied": []}
+    listed = {}
+    for name in ALL_TOOLS:
+        why = POLICY.hidden_reason(name)
+        group = POLICY.group_of(name)
+        if why:
+            hidden[{"profile": "profile", "toolset": "toolset", "denied": "denied"}[why]].append(name)
+        else:
+            listed[group] = listed.get(group, 0) + 1
+    out = {
+        "success": True, "profile": POLICY.profile, "tier_ceiling": tool_policy.TIER_NAMES[POLICY.max_tier],
+        "toolset": sorted(POLICY.groups) if POLICY.groups is not None else "all",
+        "allow": sorted(POLICY.allow), "deny": sorted(POLICY.deny),
+        "shell_tools_enabled": os.environ.get("CE_MCP_ALLOW_SHELL") == "1",
+        "tools_listed": sum(listed.values()), "tools_hidden": {k: len(v) for k, v in hidden.items()},
+        "listed_per_group": dict(sorted(listed.items())),
+        "profiles": {"readonly": "observe only", "analysis": "+ breakpoints, symbols, structures, attach, host introspection",
+                     "patch": "+ write memory / registers / protection / allocations", "full": "+ code execution, injection, shell, files, input automation"},
+        "groups": list(tool_policy.GROUPS), "presets": {k: list(v) for k, v in tool_policy.PRESETS.items()},
+    }
+    if POLICY.warnings:
+        out["warnings"] = POLICY.warnings
+    if details:
+        out["hidden_tools"] = {k: v for k, v in hidden.items() if v}
+    return format_result(out)
+
+
+_unlisted = POLICY.apply(mcp)
+if POLICY.profile != "full" or POLICY.groups is not None or POLICY.allow or POLICY.deny:
+    debug_log("policy: profile=%s toolset=%s -> %d tools listed, %d hidden"
+              % (POLICY.profile, ",".join(sorted(POLICY.groups)) if POLICY.groups else "all", len(ALL_TOOLS) - len(_unlisted), len(_unlisted)))
+
+# >>> END UNIT-29 <<<
 
 if __name__ == "__main__":
     try:

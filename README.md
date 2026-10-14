@@ -194,7 +194,7 @@ Use the `ping` tool to verify connectivity:
 
 ---
 
-## ~180 MCP Tools Available
+## 200+ MCP Tools Available
 
 ### Memory
 | Tool | Description |
@@ -214,7 +214,8 @@ Use the `ping` tool to verify connectivity:
 ### Debugging
 | Tool | Description |
 |------|-------------|
-| `set_breakpoint`, `set_data_breakpoint` | Hardware breakpoints |
+| `set_breakpoint`, `set_data_breakpoint` | Hardware breakpoints with conditions (`RAX==5`, `u32(RDX+8)==0x1234`), `max_hits`, validation, and a `mode="break"` that stops the thread for inspection |
+| `get_halted_state`, `debug_continue` | Inspect a thread stopped by a break-mode breakpoint (fresh registers, instruction, stack, captured memory), then run / step it. A watchdog resumes it by itself, so a lost client cannot freeze the game |
 | `start_dbvm_watch` | Ring -1 invisible tracing |
 
 ### Process Lifecycle
@@ -277,6 +278,34 @@ And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 
 ---
 
+### Operations & Async Jobs
+| Tool | Description |
+|------|-------------|
+| `bridge_status` | One-call health report (bridge version, uptime, attached process, DBK/DBVM, breakpoint/job counts, request stats, warnings). Still answers when CE is unreachable and says why. |
+| `read_struct` | Read many typed fields (`u32`, `f32`, `ptr`, `cstring`, `wstring`, ...) with a single memory read |
+| `batch_commands` | Run up to 100 commands in one round trip |
+| `start_job`, `get_job`, `get_job_result`, `wait_for_job`, `cancel_job`, `list_jobs` | Run long scans (`scan_all`, `next_scan`, `aob_scan`, `find_references`, `find_call_references`) in the background with progress, without freezing CE or hitting the client timeout |
+
+`read_memory` now takes `format` (`hex` default, `base64`, `array`, `both`); `hex` roughly halves the output of the old default.
+
+### Analysis, PE & IDA Exchange
+| Tool | Description |
+|------|-------------|
+| `pe_info`, `pe_imports`, `pe_exports`, `pe_tls_callbacks` | Parse a loaded module's PE headers from memory: sections (rwx), imports with the live IAT values (spot hooks), exports with forwarders, TLS callbacks |
+| `rtti_scan_module` | Every MSVC RTTI class in a module: vtable address/RVA, virtual function count, base-class chain (x64 and x86) |
+| `pe_functions` | Exact x64 function boundaries from `.pdata` (also used by `find_function_boundaries`, `analyze_function` and string refs): unwind info, exception handler, split-fragment resolution |
+| `recover_struct` | Class layout from live instance(s) of a polymorphic MSVC class: RTTI name/bases, virtual functions with exact sizes, inferred fields (typed pointers, text, floats, doubles, ints), C declaration and an optional CE structure |
+| `find_string_refs` | Code (`lea reg,[rip+x]`, absolute operands) and data that reference a string, with the function each reference is in |
+| `find_xrefs` | Everything that references an address or a range ("who calls this", "who touches this variable"): calls and jumps (rel32 and short), x64 rip-relative operands classified as read / write / lea / call, absolute pointers in code and data, jump-table RVAs. Hits are validated with the disassembler and grouped by calling function |
+| `find_code_caves` | Runs of `0xCC`/`0x00`/`0x90` padding for patches and hooks |
+| `find_pointer_path` | Reverse pointer search: static `[[module+rva]+o1]+o2` chains that reach a heap address, verified by re-resolving. `save_as` keeps the chains in a named set for the two-run comparison |
+| `compare_pointer_paths`, `list_pointer_sets`, `get_pointer_set`, `drop_pointer_set` | **Two-run pointer path comparison**: after the target restarts and you have found the same value again, `compare_pointer_paths(target=<new address>, name=<set>)` re-resolves every stored chain from its `module+RVA` base and keeps the ones that still land on it (`save_as` narrows the set; a chain with `runs=3` survived three restarts). Chains that miss by a small distance come back as `near_misses` with a corrected last offset, and a comparison inside the same process instance is flagged. Sets live in the bridge (they survive target restarts, not a reload of the script) |
+| `snapshot_region`, `diff_snapshots`, `list_snapshots`, `delete_snapshot` | Save memory copies and diff them (`C`hanged / `U`nchanged pattern per pair) for unknown-value hunting without scans |
+| `va_to_rva`, `rva_to_va`, `rebase_address` | Translate between runtime addresses, module+RVA and IDA addresses |
+| `export_names`, `export_structures`, `import_names` | Send CE symbols, RTTI vtables and structure definitions to IDA (JSON, an IDAPython script, C declarations) and bring IDA names back as CE symbols |
+
+The long-running ones (`rtti_scan_module`, `find_string_refs`, `find_xrefs`, `find_code_caves`, `find_pointer_path`) run as background jobs: they wait up to `wait_seconds` and otherwise return a `job_id` for `wait_for_job` / `get_job_result`.
+
 ## Critical Configuration
 
 ### BSOD Prevention
@@ -301,7 +330,8 @@ Check these in order:
 2. The MCP client was restarted after adding the server config.
 3. The configured `mcp_cheatengine.py` path exists.
 4. `pip install -r MCP_Server/requirements.txt` has installed both `mcp` and `pywin32`.
-5. Run the MCP `ping` tool. A successful connection returns `success: true` and the bridge version. `process_id: 0` is normal until Cheat Engine is attached to a target process.
+5. Run the MCP `bridge_status` tool: it works even when CE is unreachable and reports whether the pipe is missing (CE not running / bridge not loaded) or busy (another MCP client holds it).
+6. Run the MCP `ping` tool. A successful connection returns `success: true` and the bridge version. `process_id: 0` is normal until Cheat Engine is attached to a target process.
 
 ---
 
@@ -309,8 +339,29 @@ Check these in order:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. |
+| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. Keep it below your MCP host's own tool timeout. |
+| `CE_MCP_CONNECT_WAIT` | `2` | Seconds to keep retrying when the pipe is busy or being re-created after a disconnect. |
 | `CE_MCP_ALLOW_SHELL` | *unset* | Set to `1` to enable `run_command` / `shell_execute` tools. **Arbitrary code execution risk** — leave unset by default. |
+| `CE_MCP_PROFILE` | `full` | What the AI client may **do**: `readonly` (observe), `analysis` (+ breakpoints, symbols, attach), `patch` (+ write memory), `full` (+ Lua, AutoAssembler, injection, shell, files, input). See below. |
+| `CE_MCP_TOOLSET` | *all* | Which tools are **listed** (shrinks the tool schema the model reads): groups and presets, e.g. `reverse` or `core,memory,analysis`. |
+| `CE_MCP_ALLOW` / `CE_MCP_DENY` | *unset* | Comma separated tool names: lift one tool above the profile / remove one below it (deny wins). |
+
+### Safety profiles and tool groups
+
+`CE_MCP_ALLOW_SHELL` only ever covered two tools. `evaluate_lua`, `auto_assemble` (scripts can contain `{$lua}`), `execute_code*`, `inject_dll`, `load_table`, `delete_file`, input automation and kernel writes reach the same power, so a prompt-injected client could always have used one of them. `CE_MCP_PROFILE` closes that: every call passes one gate in the MCP server (including the methods hidden inside `batch_commands` and `start_job`), and tools above the profile are not even listed. An unknown profile value fails closed (`readonly`). Set it in the MCP server's environment, e.g. in the client's MCP config:
+
+```json
+"cheatengine": { "command": "python", "args": ["C:\\path\\to\\mcp_cheatengine.py"], "env": { "CE_MCP_PROFILE": "analysis", "CE_MCP_TOOLSET": "reverse" } }
+```
+
+| Profile | Adds | Typical use |
+|---------|------|-------------|
+| `readonly` | reading memory, process/module info, scans, disassembly, PE/RTTI/xref analysis, snapshots | reverse engineering with an AI you do not fully trust |
+| `analysis` | breakpoints, DBVM watches, symbols, structures, attaching, host introspection | live debugging without changing the target |
+| `patch` | write memory/registers/protection, allocations | applying a patch you have reviewed |
+| `full` | Lua, AutoAssembler, code execution, injection, shell, files, clipboard, input automation, kernel writes | the previous behaviour (default) |
+
+Tool groups: `core` (always), `memory`, `scan`, `analysis`, `symbols`, `structures`, `table`, `debug`, `asm`, `exec`, `system`, `gui`, `kernel`; presets `minimal` (core, memory, scan), `reverse` (+ analysis, symbols, structures, debug) and `all`. A toolset only changes what is listed: with all 207 tools the schema is about 100 KB of text, `reverse` about 68 KB and `minimal` about 27 KB. The `policy_info` tool tells a client what is active and why a tool is missing.
 
 ---
 
@@ -342,7 +393,15 @@ README.md                               # User-facing documentation
 MCP_Server/
 ├── mcp_cheatengine.py                  # Python MCP Server (FastMCP)
 ├── ce_mcp_bridge.lua                   # Cheat Engine Lua Bridge
-└── test_mcp.py                         # Test Suite
+└── test_mcp.py                         # Live end-to-end test (needs Cheat Engine running)
+
+tests/
+├── run_all.py                          # Runs every offline suite (no Cheat Engine needed)
+├── test_lua_*.py                       # Lua bridge: codec/replies, jobs, PE/RTTI/analysis
+├── test_client_*.py                    # Python MCP client against a fake bridge pipe
+├── mutation_check.py                   # Proves the suites catch deliberate breakages
+├── lua_harness.py, testkit.py          # Shared helpers
+└── README.md
 
 AI_Context/
 ├── BATCH_WORKER_BRIEFING.md            # Parallel-worker task specifications (v12 overhaul)
@@ -355,7 +414,13 @@ AI_Context/
 
 ## Testing
 
-Running the test:
+### Offline suites (no Cheat Engine needed)
+```bash
+python tests/run_all.py
+```
+Runs the real bridge code against a fake Cheat Engine API plus the Python client against a fake bridge pipe (about 30 seconds). Add `--real` to also validate the PE/RTTI parsing against real system DLLs and `--mutation` to check that the suites catch deliberate breakages. Details in [`tests/README.md`](tests/README.md).
+
+### Live end-to-end test (Cheat Engine running, bridge loaded, a process attached)
 ```bash
 python MCP_Server/test_mcp.py
 ```

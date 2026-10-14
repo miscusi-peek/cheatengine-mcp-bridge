@@ -3203,7 +3203,11 @@ The MCP bridge Python server (`mcp_cheatengine.py`) reads the following environm
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `CE_MCP_TIMEOUT` | float (seconds) | 30 | Timeout in seconds for each bridge command round-trip. Set `<=0` to disable timeout enforcement. |
+| `CE_MCP_CONNECT_WAIT` | float (seconds) | 2 | How long `connect()` keeps retrying when the pipe is busy or being re-created. A pipe that has never existed (CE not running) fails after ~0.25s. |
 | `CE_MCP_ALLOW_SHELL` | int (0 or 1) | 0 | Set to `1` to enable shell execution tools (`run_command`, `shell_execute`). **Disabled by default for security.** |
+| `CE_MCP_PROFILE` | string | `full` | `readonly` \| `analysis` \| `patch` \| `full`: the highest tier of tool the client may use (section 37). Unknown value = `readonly`. |
+| `CE_MCP_TOOLSET` | string | all | Comma separated tool groups / presets to list (section 37). Not a permission. |
+| `CE_MCP_ALLOW`, `CE_MCP_DENY` | string | unset | Comma separated tool names to lift above / remove below the profile. Deny wins. |
 
 **Setting environment variables:**
 
@@ -3263,8 +3267,8 @@ All commands return `success: false` with an `error` field on failure:
 | `"DBK driver not loaded"` | DBK/DBVM kernel driver not initialized. | Load DBK driver in CE settings. |
 | `"DBVM watch returned nil"` | DBVM not activated in CE settings. | Enable DBVM in Edit → Settings → Debugger. |
 | `"Cheat Engine Bridge not running"` | Named pipe not found. | Start CE with `ce_mcp_bridge.lua` loaded. |
-| `"Response too large"` | Pipe response exceeded 16 MB limit. | Reduce `size` or `max` parameter. |
-| `"Pipe Communication failed"` | Named pipe connection lost. | Bridge auto-reconnects on next call. |
+| `"Response too large"` | Pipe response exceeded 32 MB limit. | Reduce `size` or `max` parameter. |
+| `"Pipe Communication failed"` | Named pipe connection lost. | Read-only commands are retried once automatically. State-changing commands are not re-sent after the request was delivered: the error says the outcome is unknown, so check the target's state before repeating. |
 | `"Invalid JSON received from CE"` | Corrupt pipe response. | Usually transient; retry the command. |
 | `"Shell execution disabled"` | `run_command` or `shell_execute` called without `CE_MCP_ALLOW_SHELL=1`. | Set environment variable to enable. |
 | `"Process not opened"` | No process is attached to CE. | Use `open_process` or attach via CE GUI. |
@@ -3381,6 +3385,185 @@ All commands return `success: false` with an `error` field on failure:
 ```
 
 **Walk-back recipe:** `start_dbvm_watch` → `poll_dbvm_watch` → `analyze_pointer_access` → `scan_all(next_scan_value, "qword")` → repeat until `get_address_info` shows a module → `validate_pointer_chains` (twice, across a restart).
+
+---
+
+## 33. Operations & Async Jobs (Unit 25)
+
+### `bridge_status`
+Health/diagnostics. No parameters. Returns `version`, `pipe`, `uptime_seconds`, `client_connected`, `tools_registered`, `ce_version`, `process` (as `get_process_info`, plus `attached`), `drivers` (`dbk_loaded`, `dbvm_loaded`, `debugger_attached`), `state` (`breakpoints`, `hw_slots_used/total`, `dbvm_watches`, `persistent_scans`, `scan_session_active`, `structures`, `jobs_running`, `jobs_tracked`, `scan_job`), `stats` (`requests`, `errors`, `last_method`, `last_ms`, `slowest_method/ms`, `last_error`), `query_memory_region_routines` (`enabled|disabled|unknown`; best-effort, CE has no documented getter) and `warnings[]`. The MCP wrapper adds `reachable` and `python_side` (transport, endpoint, timeouts, last connection error); if CE cannot be reached it returns `reachable:false` and a `hint` instead of raising.
+
+### `read_memory` (`format`)
+`format`: `both` (bridge default, legacy: `data` hex string + `bytes` array), `hex` (`data` only; the MCP tool's default), `base64` (`base64`), `array` (`bytes` only). Unknown values give `INVALID_PARAMS`.
+
+### `read_struct`
+`address`, `fields[]` = `{name, type, offset?, size?}`. `offset` defaults to the end of the previous field (packed). Types: `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr bool bytes cstring wstring` plus aliases (`byte word dword qword float double int short pointer string utf16`). `size` = bytes for `bytes`/`cstring`, characters for `wstring`. Limits: 512 fields, 64 KB span. One `readBytes` covers the whole span; if that fails each field is read on its own and only unreadable fields get an `error`. Returns `fields[{name,type,offset,value,hex?,error?}]`, `span`, `arch`. Pointers and `u64` values above 2^63 are hex strings.
+
+### `batch`
+`requests[]` = `{method, params}` (max 100, no nesting), `stop_on_error`. Runs sequentially in one main-thread slot. Returns `requested`, `executed`, `failed`, `results[]` (one reply per request, same shapes as the individual calls; a failing request does not fail the batch).
+
+### Async jobs
+| Command | Parameters | Returns |
+|---------|-----------|---------|
+| `start_job` | `kind`, `params` | `job_id`, `state` |
+| `get_job` | `job_id` | `state` (`running|done|failed|cancelled`), `phase` (`scanning|processing`), `progress{current,total,percent,results_found}`, `elapsed_seconds`, `result_summary` |
+| `get_job_result` | `job_id`, `offset`, `limit` | Same shape as the blocking command (`count` for scans; `total/offset/limit/returned` + `addresses|references|callers` for lists). `BUSY` while running |
+| `cancel_job` | `job_id` | `state`, `note` |
+| `list_jobs` | - | `jobs[]` (running + the 20 most recent finished) |
+
+`kind` is one of `scan_all`, `next_scan`, `aob_scan`, `find_references`, `find_call_references`; `params` are the blocking command's parameters. At most 4 jobs run at once (`OUT_OF_RESOURCES`). `scan_all`/`next_scan` jobs own the shared scan session: the blocking `scan_all`, `next_scan` and `get_scan_results` answer `BUSY` until the job finishes. Cancelling a `next_scan` job discards the scan session (CE has no stop-scan call, so the memscan is destroyed); cancel a `scan_all` job and the previous session is untouched. The MCP server also offers `wait_for_job` (client-side polling, capped at 90 s per call).
+
+---
+
+## 34. Analysis, PE & IDA Exchange (Unit 26)
+
+All commands below that take `module` accept a module name (case-insensitive; exact match first, then substring) or an address inside the module; empty means the main module (the first one CE lists).
+
+### PE parsing
+| Command | Parameters | Returns |
+|---------|-----------|---------|
+| `pe_info` | `module` | `arch`, `entry_point(_rva)`, `preferred_image_base`, `relocated`, `size_of_image`, `subsystem`, `sections[{name,rva,virtual_size,raw_size,flags,address}]` (`flags` = `r`/`w`/`x`), `data_directories[]` |
+| `pe_imports` | `module`, `dll`, `offset`, `limit` | `dlls[{name,count}]`, `imports[{dll,name\|ordinal,hint,iat_rva,iat_address,resolved,resolved_module}]`. `resolved` is what the IAT holds right now, so a value outside the expected DLL reveals a hook |
+| `pe_exports` | `module`, `name_contains`, `offset`, `limit` | `exports[{name,ordinal,rva,rva_hex,address,forwarder?}]` |
+| `pe_tls_callbacks` | `module` | `callbacks[{address,rva,section,module}]` plus the TLS directory fields |
+
+### Address translation
+`va_to_rva` (`address` or `addresses`, optional `ida_image_base`, `include_section`) returns `module`, `rva`, `section`, `expression` (`module+0xRVA`) and `ida_address`. `rva_to_va` (`module`, `rva`/`rvas`, optional `ida_image_base`) is the inverse. `rebase_address` (`address(es)`, `from_base`|`from_module`, `to_base`|`to_module`) moves addresses between two images loaded at different bases.
+
+### Exchanging names with IDA
+`export_names` (`module`, `sources` = `symbols` and/or `rtti`, `format` = `json`|`idapython`, `ida_image_base`, `include_types`) returns the entries (`rva`, `name`, `ida_name`, `kind`), an IDAPython `script` that applies them relative to the loaded image base, and `c_declarations` (vtable/class skeletons from RTTI). RTTI names come from the last `rtti_scan` of that module. `export_structures` (`name`) writes C declarations for CE structure definitions with explicit padding. `import_names` (`names[{name, rva|address}]`, `module`, `prefix`, `address_is_ida`, `ida_image_base`, `do_not_save`) registers names as CE symbols (max 5000 per call).
+
+### Background analysis jobs (`start_job` kinds)
+| Kind | Parameters | Result |
+|------|-----------|--------|
+| `rtti_scan` | `module`, `max_vtable_entries` | `classes[{class_name,raw_name,kind,vtable,vtable_rva,col,this_offset,vfunc_count,bases[]}]`. MSVC RTTI only. Three passes over the non-executable sections: type descriptors, complete object locators, vtables. A non-zero `this_offset` marks a secondary base's vtable |
+| `find_string_refs` | `text`\|`address`, `module`, `wide`, `match` (`start`\|`any`), `include_data` | `string_addresses[]`, `references[{address,kind,target,rva,section,instruction}]`; kinds `rip_lea` (x64 `lea reg,[rip+disp]`), `abs_code`, `abs_data` |
+| `find_xrefs` | `address`, `size`, `module` (name\|`all`), `kinds`, `max_results` | `references[{kind,address,target,rva,section,instruction,access,function_start}]`, `functions[]`, `by_kind{}`; see section 36 |
+| `find_code_caves` | `module`, `byte` (`0xCC`\|`0x00`\|`0x90`), `min_size`, `sections` (`exec`\|`all`) | `caves[{address,size,rva,section}]`, largest first |
+| `find_pointer_path` | `address`, `max_depth` (1-6), `max_offset`, `max_per_level`, `max_results`, `protection`, `save_as` | `chains[{base,offsets,offsets_hex,expression,depth,verified}]`, plus `saved_as` + `set{}` (or `save_note`) when `save_as` names a pointer set (section 38). One value-between memscan per frontier address per level; non-static holders are expanded best-first (smallest accumulated offsets) up to `max_per_level`. `offsets` are outermost first: `base` -> read -> `+offsets[0]` -> read -> ... -> `+offsets[last]` = the address. Re-check chains after a restart with `compare_pointer_paths` (section 38) or `validate_pointer_chains` |
+
+The MCP tools `rtti_scan_module`, `find_string_refs`, `find_code_caves` and `find_pointer_path` wrap `start_job` + wait + `get_job_result`.
+
+### Snapshots
+`snapshot_region` (`address`+`size`, or `module`+`section`; `name`) stores a copy (64 MB each, 128 MB and 16 snapshots in total; unreadable pages are zero-filled and counted in `unreadable_bytes`). `diff_snapshots` (`snapshots` in time order, `"live"` allowed; `pattern` with one `C`/`U`/`?` per consecutive pair; `unit` 1/2/4/8; `offset`/`length`; `merge_gap`; `limit`) returns `total_matches`, `matches[]` (`old`/`new`, `values` for 3+ snapshots, float views for unit 4 and double views for unit 8) and `groups[]` of merged runs that point at likely fields. Blocks that were unreadable in any snapshot are skipped (`skipped_unreadable_blocks`). `list_snapshots`, `delete_snapshot` (`name` or `all`).
+
+---
+
+## 35. Functions, Struct Recovery & Breakpoint Control (Unit 27)
+
+### Function boundaries from `.pdata` (x64)
+`pe_functions` with `address` returns the function containing it: `function_start`, `function_end` (last byte), `begin_rva`, `end_rva` (exclusive), `size`, `expression` (`module+0xRVA`), `exception_handler` and `unwind` (`prolog_size`, `frame_register`, `frame_offset`, `flags` = `EHANDLER`/`UHANDLER`/`CHAININFO`). A chained unwind entry is a split ("cold") fragment: the result describes the primary function and `fragment` holds the matching entry. `found:false` is not an error: leaf functions that never touch the stack have no entry. Without `address` it pages through the whole table (`total`, `offset`, `limit`, `include_unwind`). x86 modules answer `available:false`.
+
+`find_function_boundaries` and `analyze_function` use the table first (`method:"pdata"`, `exact:true`; `analyze_function` then walks the whole range, including code after the first `ret`) and fall back to the old prologue/ret heuristic (`method:"heuristic"`). `find_string_refs` adds `function_start`/`function_rva` to references inside a known function.
+
+### Struct recovery (`recover_struct`)
+`address` or `addresses` (1 to 16 instances of **one** class), `size` (default 0x100, max 0x4000), `create`, `name`, `max_vtable_entries`. The vtable pointer at offset 0 must lead to MSVC RTTI (a polymorphic class); otherwise `NOT_FOUND`. Instances of different classes are refused.
+
+Returns `class_name`/`raw_name`/`kind`, `module`, `vtable`, `this_offset`, `bases[{name,offset,virtual}]` (first entry is the class itself), `size_analyzed` (the all-zero tail is dropped), `fields[{offset,size,kind,type,name,samples,points_to?,text?}]`, `virtual_functions[{index,address,expression,function_size?}]`, `c_declaration` and `notes`. Field kinds: `vfptr`, `object` (pointer to another RTTI object, typed `Class *`), `string` (`char *`), `static` (pointer into a module, `points_to` = `module+0xRVA`), `heap` (`void *`), `text` (inline char buffer), `double`, `float`, `int`, `unknown` (zero runs, merged). With `create:true` a CE structure is created (`structure_id`, `elements_created`; text buffers get their byte size; unknown runs are left as gaps).
+
+Heuristics, in order, per slot: pointer-sized pointer (or null) in every instance; inline printable text (>= 4 chars + NUL); double at an 8-aligned offset (not when both halves are plausible floats); all-zero; float when every non-zero value is a plausible float (|x| between 1e-6 and 1e7, not a small integer); otherwise int. More instances make the guesses better. Known limits: two floats at an 8-aligned offset where one is 0.0 can read as a double, and a bare pointer to a non-polymorphic heap object stays `void *`.
+
+### Breakpoint control
+`set_breakpoint` / `set_data_breakpoint` take these extra parameters (all optional; the defaults keep the old "log and keep running" behaviour):
+
+| Parameter | Meaning |
+|-----------|---------|
+| `condition` | Expression that must be true for a hit to be recorded. Environment: registers (`RAX`..`R15`, `RIP`, `RSP`, `EFLAGS`; x86 `EAX`..; case-insensitive), `u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 ptr` (memory readers; `nil` when unreadable), `hits()` (matched so far), `seen()` (all hits), `abs min max floor`. Nothing else is visible (`os`, `io`, `load`, `_G` are `nil`). Runs under an instruction budget (200 000 VM instructions), so `while true do end` cannot hang the target. Max 500 characters. A condition that raises an error records the hit with `condition_error` and is disabled after 5 failures (`condition_disabled`). |
+| `max_hits` | Detach after N matching hits (the debug register is freed; the hits stay readable; `state:"completed"`). The removal is deferred with CE's `queue()` when available, because detaching inside the breakpoint's own callback is risky. |
+| `mode` | `"log"` (default) or `"break"`. Break mode leaves the thread stopped by returning a non-zero number from CE's callback without continuing. |
+| `halt_timeout_ms` | Watchdog for break mode (default 10 000, max 300 000, hard limit 600 s in total including steps). When it expires the bridge resumes the thread itself (`auto_resumed` counter, `last_halt.reason:"timeout"`). |
+| `inspect` | Break mode only: up to 8 `{expr, size}` entries; each `expr` (same language as `condition`) yields an address whose `size` bytes (<= 256) are captured at the moment of the hit. |
+
+CE chooses the debugger interface from its own settings when the first breakpoint starts the debugger. The VEH debugger (`debug_process` interface 2) injects code into the target and crashed a plain Python process in testing; start the Windows debugger explicitly with `debug_process(1)` when a target dislikes it.
+
+Data breakpoints are validated: `size` must be 1, 2, 4 or 8, the address must be aligned to `size`, `access_type` must be `r`, `w` or `rw`. Hits now read the value with the watched size and report `previous_value` and `value_changed` (a write of the same value is `false`). `access_type:"r"` is an approximation: x86 debug registers cannot watch reads only, so it watches both and drops hits where the value changed.
+
+`list_breakpoints` additionally reports `state` (`active` | `halted` | `completed`), `mode`, `seen_hits`, `filtered_hits`, `condition`, `condition_errors`, `max_hits`, `size`, `access_type` and `auto_resumed`.
+
+`get_halted_state` (`stack_depth`, `extend_ms`) describes a thread that a break-mode breakpoint stopped: `halted`, `breakpoint`, fresh `registers` (the context is re-read), `instruction`, `stack`, `memory` (the inspected regions), `hit`, `halted_seconds`, `auto_resume_in_seconds`, `stepping`/`steps`. When nothing is stopped it returns `halted:false` and `last_halt` (`resumed`, `timeout`, `breakpoint removed`, `all breakpoints cleared`, `resumed outside the bridge`). Resume with `debug_continue` (`run`, `step_into`, `step_over`); after a step the thread stays under bridge control (the watchdog restarts) and `get_halted_state` shows the new position. Removing the breakpoint, `clear_all_breakpoints` and reloading the bridge also resume the thread.
+
+Verified in a live Cheat Engine (`tests/live_smoke.py`): what a `debug_setBreakpoint` callback returns decides what CE does. `nil`, `false`, `true` and `0` make CE resume the thread by itself; a **non-zero number** (1, 2) means the script took care of it and the thread stays stopped. Break mode therefore returns 1 without continuing; the normal path continues explicitly and also returns 1. Note that `debug_isBroken()` returns a function value instead of a boolean in at least CE 7.6 (x64), so the bridge never trusts it: the watchdog resumes on timeout whatever it says.
+
+<!-- UNIT-27 end -->
+
+## 36. Cross-References (Unit 28)
+
+`find_xrefs` answers "what references this address?" for code and data in one background job (`start_job` kind `find_xrefs`; the MCP tool of the same name wraps start + wait + result). It supersedes `find_references` / `find_call_references` for static analysis: those scan for one byte pattern in executable memory and cannot tell an instruction from a coincidence.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `address` | Target (hex string, symbol, `module+offset` or integer). Required. |
+| `size` | Treat `[address, address+size)` as the target (default 1, max 65536): a function's first bytes, a whole struct. Absolute pointers **in code** are only searched for sizes up to 16 (a note says so). |
+| `module` | A module name, `"all"`, or empty = the module that contains `address`, else the main module. Modules without a readable PE header are skipped with a note. |
+| `kinds` | Comma separated list or array of `call`, `jmp`, `jcc`, `rip`, `abs` (= `abs_code` + `abs_data`), `abs_code`, `abs_data`, `rva`. Default: all. |
+| `max_results` | Raw-hit cap (default 5000, max 50000). `truncated: true` plus a note when it is reached. |
+
+**Result** (paged with `offset` / `limit` like the other jobs): `target`, `size`, `modules[]`, `found`, `by_kind{}`, `functions[{function_start,function_rva,count}]` (calling functions, most references first, at most 50), optional `truncated` and `notes[]`, and `references[]`:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `call`, `jmp`, `jcc` (rel32 or rel8: `form`), `rip` (x64 rip-relative operand), `abs_code` (absolute pointer inside code), `abs_data` (pointer-aligned absolute pointer in a data section), `rva` (aligned 32-bit RVA in data, e.g. a jump table; the `.pdata` exception table is skipped) |
+| `address`, `module`, `rva`, `expression`, `section` | Where the reference is. For `rip` and `abs_code` it is the **instruction**; `abs_code` also has `field_address` (the pointer itself). An `abs_code` hit without `field_address` is a bare pointer inside code (an x86 switch table). |
+| `target`, `offset_in_target` | The address that was reached; with `size > 1` the offset inside the range. |
+| `instruction` | Disassembly of the instruction (code hits). |
+| `access` | `rip` hits only: `read`, `write`, `read/write`, `address` (lea), `call`, `jump`; from the instruction text, so treat it as a strong hint. |
+| `function_start`, `function_rva` | The enclosing function from `.pdata` (x64) when there is one. |
+
+**How hits are validated.** Candidates come from byte patterns, then the disassembler decides. A rip-relative candidate is kept only if the instruction that covers the displacement ends exactly where the displacement says (`U26.insnStart` decodes forward from the function start, or 96 bytes back outside `.pdata`); short jumps must sit on an instruction boundary. Rel32 branches and pointers need no check: a 32/64-bit match is not a coincidence. On the real `msvcp140.dll` and `user32.dll` this agrees with a capstone linear sweep on all 13,080 references of 74 targets (100% recall, no extras).
+
+**Limits.** Static references only: a pointer held in the heap or on the stack is not found (use `find_pointer_path`). Indirect jumps through registers and computed addresses are invisible to any static scan. x86 has no rip-relative operands or `.pdata`; there `rip`/`rva` are ignored and `abs_code` is the main data-reference kind.
+
+Also in this unit: `find_string_refs` no longer misses `lea r12,[rip+x]`. Its hand-written pattern class contained a literal `%` that silently dropped modrm byte 0x25 (reg 4 = `r12`); all pattern classes now come from `U26.byteClass`.
+
+---
+
+## 37. Capability Profiles and Tool Groups (Unit 29)
+
+Implemented in `MCP_Server/tool_policy.py`, enforced in `CEBridgeClient.send_command` (the one place every tool passes) and applied to the tool list at startup. The Lua bridge is unchanged: it trusts whoever reaches the pipe, so the policy protects against an AI client, not against another local program.
+
+**Tiers.** Every MCP tool and every bridge wire method has a group and a tier in `CATALOG`. `readonly` allows tier *read*, `analysis` adds *analysis*, `patch` adds *patch*, `full` adds *full*. A name with no entry counts as *full*, so a new tool is unusable below `full` until it is classified (`tests/test_policy.py` fails until then).
+
+| Tier | Examples |
+|------|----------|
+| read | `read_memory`, `read_struct`, `scan_all`, `aob_scan`, `disassemble`, `pe_*`, `find_xrefs`, `recover_struct`, `snapshot_region`, `get_job`, `ping` |
+| analysis | `set_breakpoint`, `set_data_breakpoint`, `debug_continue`, `pause_process`, DBVM watches, `register_symbol`, `create_structure`, `open_process`, host file/window introspection, read-only kernel queries |
+| patch | `write_memory`, `write_integer`, `copy_memory`, `allocate_memory`, `set_memory_protection`, `debug_set_context`, `set_memory_record_value` |
+| full | `evaluate_lua`, `auto_assemble`, `compile_*`, `execute_code*`, `inject_*`, `create_thread`, `create_process`, `run_command`, `shell_execute`, `delete_file`, `load_table`/`save_table`, clipboard, mouse/keyboard/window messages, modal dialogs, kernel writes and mappings |
+
+**What is checked.** The method itself, every request inside `batch` (a nested batch is refused) and the `kind` of `start_job` (all current kinds are read-only scans). A refusal is an ordinary reply, produced before any connection to CE is made: `{success:false, error_code:"PERMISSION_DENIED", error, profile, hint}`. `CE_MCP_DENY` also matches the tool names behind wire methods (`batch_commands`, `find_xrefs`, `rtti_scan_module`).
+
+**Groups** (`CE_MCP_TOOLSET`): `core` (always listed), `memory`, `scan`, `analysis`, `symbols`, `structures`, `table`, `debug`, `asm`, `exec`, `system`, `gui`, `kernel`. Presets: `all`, `minimal` (core, memory, scan), `reverse` (core, memory, scan, analysis, symbols, structures, debug). Unknown entries are ignored with a warning on stderr. A toolset never grants anything the profile denies, and hiding a tool is not a permission: a hidden tool that the profile allows can still be reached through `batch_commands`.
+
+`policy_info(details=false)` reports the active profile, toolset, allow/deny lists, how many tools are listed per group and how many are hidden and why; `details=true` lists the hidden names.
+
+---
+
+## 38. Pointer Path Sets and the Two-Run Comparison (Unit 30)
+
+A pointer chain that works in one run is only useful if it works after the target restarts. This unit keeps chains in the bridge and tests them against a second (third, ...) run. `find_pointer_path` searches for chains; it does not compare. `validate_pointer_chains` tests chains you pass in, but only reports hits for one target. The set tools add the memory between runs, the run count, the ranking and the diagnosis of near misses.
+
+**Workflow.**
+1. Run 1: find the value (scan), then `find_pointer_path(address, save_as="hp")`. The verified chains are stored as set `hp` (run 1). Chains from Cheat Engine's pointer scanner work too: pass them inline to `compare_pointer_paths` with `target` = the address they reach in the current process and `save_as`.
+2. Restart the target. Find the same value again (the address is new).
+3. `compare_pointer_paths(target=<new address>, name="hp")` re-resolves every chain from its `module+RVA` base in the new process. Chains that land exactly on `target` survived the restart. Add `save_as="hp"` to narrow the set to the survivors (they carry `runs=2`); repeat after another restart for `runs=3`.
+
+**`compare_pointer_paths`** (reads memory only; the only state it changes is the set store):
+
+| Parameter | Meaning |
+|-----------|---------|
+| `target` | Address of the same value in the current process. Required. |
+| `name` / `chains` | A stored set, or an inline list `[{"base": "game.exe+0x1A2B3C" \| address, "offsets": [0x40, 0x10], "runs": n}]`. Exactly one. Offsets follow the CE convention (dereference, then add) and may be negative or numeric text. An absolute `base` inside a module is converted to `module+RVA`; module names match case-insensitively; chains written differently but equal count once (`duplicates_ignored`). Max 5000 chains. |
+| `save_as` | Store the survivors under this name. The same name as `name` narrows the set in place; another name leaves it alone (the history is copied). Nothing is stored without it, and an empty result never overwrites or creates a set (`save_note` says so). |
+| `near_delta`, `near_limit` | Chains that resolve to within +-`near_delta` bytes (default 0x100) of `target` are returned as `near_misses` (at most `near_limit`, default 10; 0 turns them off), nearest first. |
+| `offset`, `limit` | Page through the surviving chains. |
+
+**Result:** `target`, `run` (the run number this comparison represents), `compared`, `hits`, `missed` (resolved somewhere else), `unreadable` (a pointer on the way could not be read, e.g. null), `module_missing`, `same_process`, optional `name`, `saved_as` + `set{}` or `save_note`, `duplicates_ignored`, `notes[]`, `near_misses[]` and `total/offset/limit/returned` + `chains[]`. A chain is `{base, offsets, offsets_hex, depth, expression, runs}`; survivors are sorted by `runs` (most confirmed first), then fewest and smallest offsets. A near miss adds `final_address`, `delta` (signed) and `suggested_offsets`: the same chain with its last offset corrected by `delta`, which is the usual effect of a patch that moved a field. It is a lead to verify, not a result.
+
+`same_process: true` means the pid is the one recorded for the previous run: the target was not restarted, so a hit only shows that the chain survives whatever happened in between (a level change, reallocation). It is weaker evidence and the notes say so.
+
+**Set management:** `list_pointer_sets` (name, `chain_count`, `runs`, `arch`, `created`, `updated`, `history[]`), `get_pointer_set(name, offset, limit)` (the chains plus the history) and `drop_pointer_set(name | all)`. History entries are `{run, at, pid, process, target, tested, survivors, source}` (`source`: `find_pointer_path`, `compare` or `inline`); only the last 20 are kept.
+
+**Limits.** 16 sets, 5000 chains per set, 16 offsets per chain, names of letters/digits/`_.-` up to 48 characters. Sets live in bridge memory: they survive target restarts, not a reload of `ce_mcp_bridge.lua` or closing CE; copy chains out with `get_pointer_set` when they matter. The comparison tests chains, it does not search: a chain that `find_pointer_path` did not find in run 1 (it is a capped reverse scan) cannot be confirmed later.
 
 ---
 
