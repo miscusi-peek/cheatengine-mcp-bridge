@@ -724,7 +724,7 @@ function cmd_read_memory(params)
     local size = math.max(1, math.min(params.size or 256, 1048576))  -- 1 MB max
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local bytes = readBytes(addr, size, true)
     if not bytes then return { success = false, error = "Failed to read at " .. toHex(addr) } end
@@ -746,7 +746,7 @@ function cmd_read_integer(params)
     local itype = params.type or "dword"
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local val
     if itype == "byte" then
@@ -773,7 +773,7 @@ function cmd_read_string(params)
     local encoding = params.encoding or (wide and "utf16le" or "utf8")
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local parts = {}
     local rawLen = 0
@@ -1080,7 +1080,7 @@ function cmd_write_integer(params)
     local vtype = params.type or "dword"
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     if vtype == "byte" then
         if type(value) ~= "number" or value < 0 or value > 0xFF then
@@ -1125,7 +1125,7 @@ function cmd_write_memory(params)
     local bytes = params.bytes
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     if not bytes or #bytes == 0 then return { success = false, error = "No bytes provided" } end
     
     local ok, err = pcall(writeBytes, addr, bytes)
@@ -1143,7 +1143,7 @@ function cmd_write_string(params)
     local wide = params.wide or false
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     if not str then return { success = false, error = "No string provided" } end
     
     local ok, err = pcall(writeString, addr, str, wide)
@@ -1166,7 +1166,7 @@ function cmd_disassemble(params)
     local count = math.max(1, math.min(params.count or 20, 1000))
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local allInstructions = {}
     local currentAddr = addr
@@ -1199,7 +1199,7 @@ function cmd_get_instruction_info(params)
     local addr = params.address
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local ok, disasm = pcall(disassemble, addr)
     if not ok or not disasm then
@@ -1227,7 +1227,7 @@ function cmd_find_function_boundaries(params)
     local maxSearch = params.max_search or 4096
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local is64 = targetIs64Bit()
 
@@ -1264,7 +1264,7 @@ function cmd_analyze_function(params)
     local addr = params.address
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local is64 = targetIs64Bit()
 
@@ -1343,7 +1343,7 @@ function cmd_find_references(params)
     local targetAddr = params.address
 
     if type(targetAddr) == "string" then targetAddr = getAddressSafe(targetAddr) end
-    if not targetAddr then return { success = false, error = "Invalid address" } end
+    if not targetAddr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local is64 = targetIs64Bit()
     local pattern
@@ -1447,7 +1447,7 @@ function cmd_set_breakpoint(params)
     local stackDepth = params.stack_depth or 16
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     bpId = bpId or tostring(addr)
     -- Avoid collision if an existing breakpoint has the same ID
@@ -1512,7 +1512,7 @@ function cmd_set_data_breakpoint(params)
     local size = params.size or 4
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     bpId = bpId or tostring(addr)
     -- Avoid collision if an existing breakpoint has the same ID
@@ -1608,7 +1608,7 @@ function cmd_get_breakpoint_hits(params)
     end
 
     local limit, offset, page, total = paginate(params, hits, 100)
-    return { success = true, total = total, offset = offset, limit = limit, returned = #page, hits = page }
+    return { success = true, count = total, total = total, offset = offset, limit = limit, returned = #page, hits = page }
 end
 
 function cmd_list_breakpoints(params)
@@ -1864,7 +1864,7 @@ function cmd_dissect_structure(params)
     local size = params.size or 256
     
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
+    if not address then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     -- Create a temporary structure and use autoGuess
     local ok, struct = pcall(createStructure, "MCP_TempStruct")
@@ -2016,7 +2016,7 @@ function cmd_get_rtti_classname(params)
     local address = params.address
     
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
+    if not address then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local className = getRTTIClassName(address)
     
@@ -2046,7 +2046,7 @@ function cmd_get_address_info(params)
     local includeSections = params.include_sections or false  -- default false
     
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
+    if not address then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local symbolicName = getNameFromAddress(address, includeModules, includeSymbols, includeSections)
     
@@ -2084,7 +2084,7 @@ function cmd_checksum_memory(params)
     local size = params.size or 256
     
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
+    if not address then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local ok, hash = pcall(md5memory, address, size)
     
@@ -2109,7 +2109,7 @@ end
 function cmd_generate_signature(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     -- getUniqueAOB(address) returns: AOBString, Offset
     -- It scans for a unique byte pattern that identifies this location
@@ -2160,7 +2160,7 @@ end
 function cmd_get_physical_address(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     -- Check if DBK (kernel driver) is available
     local ok, phys = pcall(dbk_getPhysicalAddress, addr)
@@ -2199,7 +2199,7 @@ function cmd_start_dbvm_watch(params)
     local maxEntries = params.max_entries or 1000  -- Internal buffer size
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     -- 0. Safety Checks
     if not dbk_initialized() then
@@ -2306,7 +2306,7 @@ function cmd_poll_dbvm_watch(params)
     local max_results = params.max_results or 1000
     
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local watchKey = toHex(addr)
     local watchInfo = serverState.active_watches[watchKey]
@@ -2374,7 +2374,7 @@ end
 function cmd_stop_dbvm_watch(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     
     local watchKey = toHex(addr)
     local watchInfo = serverState.active_watches[watchKey]
@@ -3499,7 +3499,7 @@ function cmd_find_window(params)
         return { success = false, error_code = "NOT_FOUND" }
     end
 
-    return { success = true, handle = toHex(handle) }
+    return { success = true, handle = handle, handle_hex = toHex(handle) }
 end
 
 function cmd_get_window_caption(params)
@@ -4151,7 +4151,7 @@ function cmd_write_region_to_file(params)
     if not size or size <= 0 then return { success = false, error = "Missing or invalid size" } end
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local ok, bytes_written = pcall(writeRegionToFile, sanitized, addr, size)
     if not ok then
@@ -4195,7 +4195,7 @@ function cmd_md5_memory(params)
     if not size or size <= 0 then return { success = false, error = "Missing or invalid size" } end
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local ok, result = pcall(md5memory, addr, size)
     if not ok or not result then
@@ -4250,7 +4250,7 @@ function cmd_map_view_of_section(params)
     if address ~= nil then
         if type(address) == "string" then prefAddr = getAddressSafe(address)
         else prefAddr = address end
-        if not prefAddr then return { success = false, error = "Invalid address" } end
+        if not prefAddr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
     end
 
     local ok, mapped
@@ -5053,7 +5053,7 @@ function cmd_execute_code(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local param   = params.param   or 0
     local timeout = params.timeout
@@ -5070,7 +5070,7 @@ function cmd_execute_code_ex(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local callMethod = params.call_method or 0
     local timeout    = params.timeout
@@ -5088,7 +5088,7 @@ function cmd_execute_method(params)
     if not requireProcess() then return { success = false, error = "No process attached" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local instance = params.instance
     if type(instance) == "string" then instance = getAddressSafe(instance) end
@@ -5109,7 +5109,7 @@ end
 function cmd_execute_code_local(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local param = params.param or 0
 
@@ -5124,7 +5124,7 @@ end
 function cmd_execute_code_local_ex(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" } end
 
     local callMethod = params.call_method or 0
     local args = params.args or {}
