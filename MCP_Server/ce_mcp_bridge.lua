@@ -433,14 +433,34 @@ local function encode_table(val, stack)
     return "{" .. table.concat(res, ",") .. "}"
   end
 end
-local function encode_string(val) return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"' end
-local function encode_number(val) if val ~= val or val <= -math.huge or val >= math.huge then return "null" end return string.format("%.14g", val) end
+-- Replace invalid UTF-8 bytes with U+FFFD so the Python side can always decode the reply.
+local function sanitize_utf8(s)
+  if utf8.len(s) then return s end
+  local out, i = {}, 1
+  while i <= #s do
+    local ok, bad = utf8.len(s, i)
+    if ok then out[#out + 1] = s:sub(i); break end
+    if bad > i then out[#out + 1] = s:sub(i, bad - 1) end
+    out[#out + 1] = "\xEF\xBF\xBD"
+    i = bad + 1
+  end
+  return table.concat(out)
+end
+local function encode_string(val) return '"' .. sanitize_utf8(val):gsub('[%z\1-\31\\"]', escape_char) .. '"' end
+local function encode_number(val)
+  if math.type(val) == "integer" then return string.format("%d", val) end
+  if val ~= val or val <= -math.huge or val >= math.huge then return "null" end
+  local s = string.format("%.14g", val)
+  if tonumber(s) ~= val then s = string.format("%.17g", val) end
+  return s
+end
 local type_func_map = { ["nil"] = encode_nil, ["table"] = encode_table, ["string"] = encode_string, ["number"] = encode_number, ["boolean"] = tostring, ["function"] = function() return "null" end, ["userdata"] = function() return "null" end }
 encode = function(val, stack) local t = type(val) local f = type_func_map[t] if f then return f(val, stack) end error("unexpected type '" .. t .. "'") end
 json.encode = encode
 
 local function decode_scanwhite(str, pos) return str:find("%S", pos) or #str + 1 end
 local decode
+local json_simple_escapes = { ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b', f = '\f', n = '\n', r = '\r', t = '\t' }
 local function decode_string(str, pos)
   local startpos = pos + 1
   local endpos = pos
@@ -450,10 +470,42 @@ local function decode_string(str, pos)
     if str:sub(endpos, endpos) == '"' then break end
     endpos = endpos + 1
   end
-  local s = str:sub(startpos, endpos - 1)
-  s = s:gsub("\\.", function(c) return escape_char_map_inv[c:sub(2)] or c end)
-  s = s:gsub("\\u(%x%x%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
-  return s, endpos + 1
+  local raw = str:sub(startpos, endpos - 1)
+  if not raw:find("\\", 1, true) then return raw, endpos + 1 end
+  -- Single left-to-right pass so "\\u0041" (escaped backslash + text) is not
+  -- mistaken for a unicode escape, and \uXXXX (incl. surrogate pairs) becomes UTF-8.
+  local out, i, n = {}, 1, #raw
+  while i <= n do
+    local j = raw:find("\\", i, true)
+    if not j then out[#out + 1] = raw:sub(i); break end
+    if j > i then out[#out + 1] = raw:sub(i, j - 1) end
+    local c = raw:sub(j + 1, j + 1)
+    if c == "u" then
+      local hex = raw:match("^%x%x%x%x", j + 2)
+      if not hex then
+        out[#out + 1] = "\\u"; i = j + 2
+      else
+        local cp, adv = tonumber(hex, 16), j + 6
+        if cp >= 0xD800 and cp <= 0xDBFF then
+          local lo = raw:match("^\\u(%x%x%x%x)", adv)
+          local lcp = lo and tonumber(lo, 16)
+          if lcp and lcp >= 0xDC00 and lcp <= 0xDFFF then
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (lcp - 0xDC00)
+            adv = adv + 6
+          else
+            cp = 0xFFFD
+          end
+        elseif cp >= 0xDC00 and cp <= 0xDFFF then
+          cp = 0xFFFD
+        end
+        out[#out + 1] = utf8.char(cp); i = adv
+      end
+    else
+      out[#out + 1] = json_simple_escapes[c] or ("\\" .. c)
+      i = j + 2
+    end
+  end
+  return table.concat(out), endpos + 1
 end
 local function decode_number(str, pos)
   local numstr = str:match("^-?%d+%.?%d*[eE]?[+-]?%d*", pos)
@@ -1439,6 +1491,39 @@ local function clearGhostBpSlot(addr)
     end
 end
 
+-- Max buffered hits per breakpoint. When full, the oldest quarter is dropped
+-- (amortised O(1)); bp.total_hits keeps the cumulative count.
+local MAX_HITS_PER_BP = 2000
+
+-- Appends a hit to a breakpoint's buffer. The bucket is looked up on every hit
+-- because get_breakpoint_hits/clear_all/remove_breakpoint replace or drop it.
+local function recordBpHit(bpId, hitData)
+    local bucket = serverState.breakpoint_hits[bpId]
+    if not bucket then return end
+    local bp = serverState.breakpoints[bpId]
+    if bp then bp.total_hits = (bp.total_hits or 0) + 1 end
+    local n = #bucket
+    if n >= MAX_HITS_PER_BP then
+        local drop = MAX_HITS_PER_BP // 4
+        table.move(bucket, drop + 1, n, 1)
+        for i = n, n - drop + 1, -1 do bucket[i] = nil end
+        if bp then bp.dropped_hits = (bp.dropped_hits or 0) + drop end
+        n = n - drop
+    end
+    bucket[n + 1] = hitData
+end
+
+-- Hit callbacks MUST reach debug_continueFromBreakpoint, otherwise the target
+-- thread stays halted. Run the body under pcall and always continue.
+local function safeBpCallback(body)
+    return function()
+        local ok, err = pcall(body)
+        if not ok then log("Breakpoint callback error: " .. tostring(err)) end
+        debug_continueFromBreakpoint(co_run)
+        return 1
+    end
+end
+
 function cmd_set_breakpoint(params)
     local addr = params.address
     local bpId = params.id
@@ -1479,7 +1564,7 @@ function cmd_set_breakpoint(params)
     
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
     -- Signature: debug_setBreakpoint(address, size, trigger, breakpointmethod, function)
-    debug_setBreakpoint(addr, 1, bptExecute, bpmDebugRegister, function()
+    debug_setBreakpoint(addr, 1, bptExecute, bpmDebugRegister, safeBpCallback(function()
         local hitData = {
             id = bpId,
             address = toHex(addr),
@@ -1495,10 +1580,8 @@ function cmd_set_breakpoint(params)
             hitData.stack = captureStack(stackDepth)
         end
         
-        table.insert(serverState.breakpoint_hits[bpId], hitData)
-        debug_continueFromBreakpoint(co_run)
-        return 1
-    end)
+        recordBpHit(bpId, hitData)
+    end))
     
     serverState.hw_bp_slots[slot] = { id = bpId, address = addr }
     serverState.breakpoints[bpId] = { address = addr, slot = slot, type = "execute" }
@@ -1545,7 +1628,7 @@ function cmd_set_data_breakpoint(params)
     
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
     -- Signature: debug_setBreakpoint(address, size, trigger, breakpointmethod, function)
-    debug_setBreakpoint(addr, size, bpType, bpmDebugRegister, function()
+    debug_setBreakpoint(addr, size, bpType, bpmDebugRegister, safeBpCallback(function()
         local arch = getArchInfo()
         local instPtr = arch.instPtr
         local hitData = {
@@ -1560,10 +1643,8 @@ function cmd_set_data_breakpoint(params)
             arch = arch.is64bit and "x64" or "x86"
         }
         
-        table.insert(serverState.breakpoint_hits[bpId], hitData)
-        debug_continueFromBreakpoint(co_run)
-        return 1
-    end)
+        recordBpHit(bpId, hitData)
+    end))
     
     serverState.hw_bp_slots[slot] = { id = bpId, address = addr }
     serverState.breakpoints[bpId] = { address = addr, slot = slot, type = "data" }
@@ -1604,7 +1685,11 @@ function cmd_get_breakpoint_hits(params)
                 hits[#hits + 1] = hit
             end
         end
-        if clear then serverState.breakpoint_hits = {} end
+        if clear then
+            for id in pairs(serverState.breakpoint_hits) do
+                serverState.breakpoint_hits[id] = {}
+            end
+        end
     end
 
     local limit, offset, page, total = paginate(params, hits, 100)
@@ -1618,7 +1703,10 @@ function cmd_list_breakpoints(params)
             id = id,
             address = toHex(bp.address),
             type = bp.type or "execution",
-            slot = bp.slot
+            slot = bp.slot,
+            hit_count = #(serverState.breakpoint_hits[id] or {}),
+            total_hits = bp.total_hits or 0,
+            dropped_hits = bp.dropped_hits or 0
         })
     end
     return { success = true, count = #list, breakpoints = list }
@@ -1631,7 +1719,9 @@ function cmd_clear_all_breakpoints(params)
         count = count + 1
     end
     serverState.breakpoints = {}
-    serverState.breakpoint_hits = {}
+    for id in pairs(serverState.breakpoint_hits) do
+        serverState.breakpoint_hits[id] = {}
+    end
     serverState.hw_bp_slots = {}
     return { success = true, removed = count }
 end
@@ -5948,27 +6038,42 @@ local commandHandlers = {
 -- MAIN COMMAND PROCESSOR
 -- ============================================================================
 
+-- json.encode can throw (circular tables, unsupported types); never let that
+-- escape, or the client would wait for a reply that is never written.
+local function encodeReply(tbl)
+    local ok, out = pcall(json.encode, tbl)
+    if ok then return out end
+    local ok2, out2 = pcall(json.encode, { jsonrpc = "2.0", error = { code = -32603, message = "Response encoding failed: " .. tostring(out) }, id = tbl.id })
+    if ok2 then return out2 end
+    return '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Response encoding failed"},"id":null}'
+end
+
+local function errorReply(code, message, id)
+    return encodeReply({ jsonrpc = "2.0", error = { code = code, message = message }, id = id })
+end
+
 local function executeCommand(jsonRequest)
     local ok, request = pcall(json.decode, jsonRequest)
-    if not ok or not request then
-        return json.encode({ jsonrpc = "2.0", error = { code = -32700, message = "Parse error" }, id = nil })
+    if not ok or type(request) ~= "table" then
+        return errorReply(-32700, "Parse error", nil)
     end
-    
+
     local method = request.method
-    local params = request.params or {}
+    local params = request.params
+    if type(params) ~= "table" then params = {} end
     local id = request.id
-    
+
     local handler = commandHandlers[method]
     if not handler then
-        return json.encode({ jsonrpc = "2.0", error = { code = -32601, message = "Method not found: " .. tostring(method) }, id = id })
+        return errorReply(-32601, "Method not found: " .. tostring(method), id)
     end
-    
+
     local ok2, result = pcall(handler, params)
     if not ok2 then
-        return json.encode({ jsonrpc = "2.0", error = { code = -32603, message = "Internal error: " .. tostring(result) }, id = id })
+        return errorReply(-32603, "Internal error: " .. tostring(result), id)
     end
-    
-    return json.encode({ jsonrpc = "2.0", result = result, id = id })
+
+    return encodeReply({ jsonrpc = "2.0", result = result, id = id })
 end
 
 -- ============================================================================
@@ -5977,9 +6082,17 @@ end
 -- Replaces v10 Timer architecture to prevent GUI Freezes.
 -- I/O happens in Worker Thread. Execution happens in Main Thread.
 
+local MAX_FRAME_BYTES = 32 * 1024 * 1024
+
+local function sendFrame(pipe, response)
+    local rLen = #response
+    pipe.writeBytes({ rLen % 256, math.floor(rLen / 256) % 256, math.floor(rLen / 65536) % 256, math.floor(rLen / 16777216) % 256 })
+    pipe.writeString(response)
+end
+
 local function PipeWorker(thread)
     log("Worker Thread Started - Waiting for connection...")
-    
+
     while not thread.Terminated do
         -- Create Pipe Instance per connection attempt
         -- Increased buffer size to 256KB for better throughput
@@ -5988,89 +6101,75 @@ local function PipeWorker(thread)
             log("Fatal: Failed to create pipe")
             return
         end
-        
+
         -- Store reference so we can destroy it from main thread (stopServer) to break blocking calls
         serverState.workerPipe = pipe
-        
-        -- timeout for blocking operations (connect/read)
+
         -- We DO NOT set pipe.Timeout because it auto-disconnects on timeout.
         -- We rely on blocking reads and pipe.destroy() from stopServer to break the block.
-        -- pipe.Timeout = 0 (Default, Infinite)
-        
+
         -- Wait for client (Blocking, but in thread so GUI is fine)
-        -- LuaPipeServer uses acceptConnection().
-        -- note: acceptConnection might not return a boolean, so we check pipe.Connected afterwards.
-        
-        -- log("Thread: Calling acceptConnection()...")
         pcall(function()
             pipe.acceptConnection()
         end)
-        
+
         if pipe.Connected and not thread.Terminated then
             log("Client Connected")
             serverState.connected = true
-            
+
             while not thread.Terminated and pipe.Connected do
-                -- Try to read header (4 bytes)
-                -- We use pcall to handle timeouts/errors gracefully
                 local ok, lenBytes = pcall(function() return pipe.readBytes(4) end)
-                
+
                 if ok and lenBytes and #lenBytes == 4 then
                     local len = lenBytes[1] + (lenBytes[2] * 256) + (lenBytes[3] * 65536) + (lenBytes[4] * 16777216)
-                    
-                    -- Sanity check length
-                    if len > 0 and len < 32 * 1024 * 1024 then
-                        local payload = pipe.readString(len)
-                        
-                        if payload then
+
+                    if len > 0 and len < MAX_FRAME_BYTES then
+                        local rok, payload = pcall(function() return pipe.readString(len) end)
+
+                        if rok and payload then
                             -- CRITICAL: EXECUTE ON MAIN THREAD
-                            -- We pause the worker and run logic on GUI thread to be safe
                             local response = nil
                             thread.synchronize(function()
-                                response = executeCommand(payload)
+                                local okc, resp = pcall(executeCommand, payload)
+                                if okc and resp then
+                                    response = resp
+                                else
+                                    response = errorReply(-32603, "Internal error: " .. tostring(resp), nil)
+                                end
                             end)
-                            
+
                             -- Write response back (Worker Thread)
-                            if response then
-                                local rLen = #response
-                                local b1 = rLen % 256
-                                local b2 = math.floor(rLen / 256) % 256
-                                local b3 = math.floor(rLen / 65536) % 256
-                                local b4 = math.floor(rLen / 16777216) % 256
-                                
-                                pipe.writeBytes({b1, b2, b3, b4})
-                                pipe.writeString(response)
+                            if not pcall(sendFrame, pipe, response) then
+                                log("Failed to write response; dropping connection")
+                                break
                             end
                         else
-                             -- log("Thread: Read payload failed (nil)")
+                            -- Payload unreadable: the byte stream is out of sync. Tell the
+                            -- client, then drop the connection so it reconnects cleanly.
+                            pcall(sendFrame, pipe, errorReply(-32700, "Unreadable request payload", nil))
+                            break
                         end
+                    else
+                        pcall(sendFrame, pipe, errorReply(-32600, "Invalid frame length: " .. tostring(len), nil))
+                        break
                     end
-                else
-                    -- Read failed. If pipe disconnected, the loop will terminate on next check.
-                    if not pipe.Connected then
-                        -- Client disconnected gracefully
-                    end
+                elseif pipe.Connected then
+                    sleep(5)  -- failed read on a live pipe: avoid a busy loop
                 end
             end
-            
+
             serverState.connected = false
             log("Client Disconnected")
-        else
-            -- Debug: acceptConnection returned but pipe not valid
-            -- This usually happens on termination or weird state
-            if not thread.Terminated then
-                -- log("Thread: Helper log - connection attempt invalid")
-            end
         end
-        
+
         -- Clean up pipe
         serverState.workerPipe = nil
         pcall(function() pipe.destroy() end)
-        
+
         -- Brief sleep before recreating pipe to accept new connection
         if not thread.Terminated then sleep(50) end
     end
-    
+
     log("Worker Thread Terminated")
 end
 

@@ -3203,6 +3203,7 @@ The MCP bridge Python server (`mcp_cheatengine.py`) reads the following environm
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `CE_MCP_TIMEOUT` | float (seconds) | 30 | Timeout in seconds for each bridge command round-trip. Set `<=0` to disable timeout enforcement. |
+| `CE_MCP_CONNECT_WAIT` | float (seconds) | 2 | How long `connect()` keeps retrying when the pipe is busy or being re-created. A pipe that has never existed (CE not running) fails after ~0.25s. |
 | `CE_MCP_ALLOW_SHELL` | int (0 or 1) | 0 | Set to `1` to enable shell execution tools (`run_command`, `shell_execute`). **Disabled by default for security.** |
 
 **Setting environment variables:**
@@ -3263,8 +3264,8 @@ All commands return `success: false` with an `error` field on failure:
 | `"DBK driver not loaded"` | DBK/DBVM kernel driver not initialized. | Load DBK driver in CE settings. |
 | `"DBVM watch returned nil"` | DBVM not activated in CE settings. | Enable DBVM in Edit → Settings → Debugger. |
 | `"Cheat Engine Bridge not running"` | Named pipe not found. | Start CE with `ce_mcp_bridge.lua` loaded. |
-| `"Response too large"` | Pipe response exceeded 16 MB limit. | Reduce `size` or `max` parameter. |
-| `"Pipe Communication failed"` | Named pipe connection lost. | Bridge auto-reconnects on next call. |
+| `"Response too large"` | Pipe response exceeded 32 MB limit. | Reduce `size` or `max` parameter. |
+| `"Pipe Communication failed"` | Named pipe connection lost. | Read-only commands are retried once automatically. State-changing commands are not re-sent after the request was delivered: the error says the outcome is unknown, so check the target's state before repeating. |
 | `"Invalid JSON received from CE"` | Corrupt pipe response. | Usually transient; retry the command. |
 | `"Shell execution disabled"` | `run_command` or `shell_execute` called without `CE_MCP_ALLOW_SHELL=1`. | Set environment variable to enable. |
 | `"Process not opened"` | No process is attached to CE. | Use `open_process` or attach via CE GUI. |

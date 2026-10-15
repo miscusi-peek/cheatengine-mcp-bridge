@@ -41,7 +41,7 @@ AI client ──(MCP / JSON-RPC over stdio)──▶ mcp_cheatengine.py
 
 ### Python side — `MCP_Server/mcp_cheatengine.py`
 
-Thin `FastMCP` wrapper. Every `@mcp.tool()` is a one-liner that calls `ce_client.send_command("<method>", {...})` and formats the result. `CEBridgeClient.send_command` writes a 4-byte little-endian length prefix + UTF-8 JSON-RPC body to the Named Pipe, reads the same framing back, caps responses at 16 MB, and auto-reconnects once on pipe failure.
+Thin `FastMCP` wrapper. Every `@mcp.tool()` is a one-liner that calls `ce_client.send_command("<method>", {...})` and formats the result. `CEBridgeClient.send_command` writes a 4-byte little-endian length prefix + UTF-8 JSON-RPC body to the Named Pipe, reads the same framing back, caps responses at 32 MB, and reconnects once on pipe failure. Retry rules matter: read-only methods (see `is_idempotent`) are re-sent after an unknown outcome, but state-changing methods are never re-sent once the request may have reached CE (the error says the outcome is unknown). `connect()` waits up to `CE_MCP_CONNECT_WAIT` for the bridge to re-create its pipe. On timeout `close()` cancels the worker's pending I/O via `CancelIoEx` (ctypes) first; closing the handle while another thread is blocked in `ReadFile` would otherwise hang forever.
 
 **Windows stdio pitfalls (top of file, before any other imports)** — do not move this block:
 - The MCP SDK's `stdio_server` wraps stdio with `TextIOWrapper` without `newline='\n'`, so on Windows it emits `\r\n` and the transport rejects with "invalid trailing data." The file monkey-patches `mcp.server.stdio.stdio_server` **and** `mcp.server.fastmcp.server.stdio_server` (FastMCP captures a reference at import time, so patching only the first module is a silent no-op).
@@ -72,7 +72,7 @@ Two files are the source of truth — there's no codegen, so you must edit both:
 - **Pipe name** `\\.\pipe\CE_MCP_Bridge_v99` is hardcoded in both `mcp_cheatengine.py` (as `PIPE_NAME`) and `ce_mcp_bridge.lua` (as `PIPE_NAME`). Keep them in sync if you ever rename it. The `_v99` suffix is the wire-protocol version and is independent of the bridge version (`12.0.0`).
 - **Codex config:** use TOML, not JSON. Add `[mcp_servers.cheatengine]`, `command = "python"`, and `args = ['C:\path\to\MCP_Server\mcp_cheatengine.py']`. Use TOML single-quoted strings for Windows paths so backslashes are literal, then restart Codex and verify with the `ping` tool.
 - **Anti-cheat safety** (per `AI_Context/AI_Guide_MCP_Server_Implementation.md`): prefer hardware DR0–DR3 breakpoints over software (`0xCC`) breakpoints, and prefer DBVM watches for truly invisible tracing. The existing `cmd_set_breakpoint` already uses `debug_setBreakpoint` (hardware); keep new debugging tools on that path.
-- **Env vars:** `CE_MCP_TIMEOUT` (default 30s) limits per-tool latency; `CE_MCP_ALLOW_SHELL=1` enables `run_command` / `shell_execute` (default: disabled).
+- **Env vars:** `CE_MCP_TIMEOUT` (default 30s) limits per-tool latency (keep it below the MCP host's own tool timeout); `CE_MCP_CONNECT_WAIT` (default 2s) is how long to retry a busy/re-created pipe; `CE_MCP_ALLOW_SHELL=1` enables `run_command` / `shell_execute` (default: disabled).
 
 ## Conventions (v12 overhaul)
 

@@ -309,7 +309,8 @@ Check these in order:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. |
+| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. Keep it below your MCP host's own tool timeout. |
+| `CE_MCP_CONNECT_WAIT` | `2` | Seconds to keep retrying when the pipe is busy or being re-created after a disconnect. |
 | `CE_MCP_ALLOW_SHELL` | *unset* | Set to `1` to enable `run_command` / `shell_execute` tools. **Arbitrary code execution risk** — leave unset by default. |
 
 ---
