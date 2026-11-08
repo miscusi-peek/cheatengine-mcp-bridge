@@ -41,10 +41,11 @@ AI client ──(MCP / JSON-RPC over stdio)──▶ mcp_cheatengine.py
 
 ### Python side — `MCP_Server/mcp_cheatengine.py`
 
-Thin `FastMCP` wrapper. Every `@mcp.tool()` is a one-liner that calls `ce_client.send_command("<method>", {...})` and formats the result. `CEBridgeClient.send_command` writes a 4-byte little-endian length prefix + UTF-8 JSON-RPC body to the Named Pipe, reads the same framing back, caps responses at 16 MB, and auto-reconnects once on pipe failure.
+Thin MCP SDK wrapper (`MCPServer` in mcp 2.x, `FastMCP` in 1.x). Every `@mcp.tool()` is a one-liner that calls `ce_client.send_command("<method>", {...})` and formats the result. `CEBridgeClient.send_command` writes a 4-byte little-endian length prefix + UTF-8 JSON-RPC body to the Named Pipe, reads the same framing back, caps responses at 16 MB, and auto-reconnects once on pipe failure.
 
 **Windows stdio pitfalls (top of file, before any other imports)** — do not move this block:
-- The MCP SDK's `stdio_server` wraps stdio with `TextIOWrapper` without `newline='\n'`, so on Windows it emits `\r\n` and the transport rejects with "invalid trailing data." The file monkey-patches `mcp.server.stdio.stdio_server` **and** `mcp.server.fastmcp.server.stdio_server` (FastMCP captures a reference at import time, so patching only the first module is a silent no-op).
+- The MCP SDK's stdio transport wraps the wire in `TextIOWrapper` without `newline='\n'`, so on Windows it emits `\r\n` and the transport rejects with "invalid trailing data." The file monkey-patches `mcp.server.stdio._UnownedTextWrapper` (a module-global lookup at serve time) to default `newline='\n'` — this covers both mcp 1.x and 2.x without reimplementing the transport.
+- Supports both SDK generations: mcp 2.x (`from mcp.server.mcpserver import MCPServer`, FastMCP's rename) with a fallback to mcp 1.x (`mcp.server.fastmcp.FastMCP`). In 2.x the stdio server also claims fd 1 and diverts it to stderr, so stray prints can't corrupt the wire; keep tools print-free anyway.
 - `sys.stdout` is redirected to `sys.stderr` around third-party imports so stray prints can't corrupt the JSON-RPC stream. Anything diagnostic must go through `debug_log()` (stderr only). A single stray `print()` on stdout will break the protocol.
 
 ### Lua side — `MCP_Server/ce_mcp_bridge.lua`

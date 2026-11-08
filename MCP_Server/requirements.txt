@@ -2,7 +2,7 @@
 # Install: pip install -r requirements.txt
 
 # MCP SDK (Model Context Protocol) - Required for AI agent communication
-mcp>=1.28,<2  # v2.0.0 removed mcp.server.fastmcp; pin until code is migrated to the v2 API
+mcp>=1.28  # code supports both 1.x (FastMCP) and 2.x (MCPServer)
 
 # Windows API bindings - Required for Named Pipe communication
 pywin32>=306
