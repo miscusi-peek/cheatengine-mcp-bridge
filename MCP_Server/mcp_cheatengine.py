@@ -3,76 +3,30 @@ import os
 
 # ============================================================================
 # CRITICAL: WINDOWS LINE ENDING FIX FOR MCP (MONKEY-PATCH)
-# The MCP SDK's stdio_server uses TextIOWrapper without newline='\n', causing
-# Windows to output CRLF (\r\n) instead of LF (\n). This causes the error:
-# "invalid trailing data at the end of stream"
-# We MUST patch the MCP SDK BEFORE importing FastMCP.
+# The MCP SDK's stdio transport wraps the wire in a TextIOWrapper without
+# newline='\n', causing Windows to output CRLF (\r\n) instead of LF (\n). This
+# causes the error: "invalid trailing data at the end of stream".
+# We patch the SDK's text wrapper BEFORE the server starts serving. Works for
+# both mcp 1.x (mcp.server.stdio) and mcp 2.x (same module; FastMCP moved to
+# mcp.server.mcpserver but the stdio layer kept its module path).
 # ============================================================================
 
 if sys.platform == "win32":
-    import msvcrt
-    from io import TextIOWrapper
-    from contextlib import asynccontextmanager
-    
-    # Set binary mode on underlying file handles
-    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-    
-    # Monkey-patch the MCP SDK's stdio_server to use newline='\n'
     import mcp.server.stdio as mcp_stdio
-    import anyio
-    import anyio.lowlevel
-    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-    import mcp.types as types
-    from mcp.shared.message import SessionMessage
-    
-    @asynccontextmanager
-    async def _patched_stdio_server(
-        stdin: "anyio.AsyncFile[str] | None" = None,
-        stdout: "anyio.AsyncFile[str] | None" = None,
-    ):
-        """Patched stdio_server with proper Windows newline handling."""
-        if not stdin:
-            # Use newline='\n' to prevent CRLF translation on Windows
-            stdin = anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8", newline='\n'))
-        if not stdout:
-            # Use newline='\n' to prevent CRLF translation on Windows
-            stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline='\n'))
 
-        read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
-        write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+    _OriginalUnownedTextWrapper = mcp_stdio._UnownedTextWrapper
 
-        async def stdin_reader():
-            try:
-                async with read_stream_writer:
-                    async for line in stdin:
-                        try:
-                            message = types.JSONRPCMessage.model_validate_json(line)
-                        except Exception as exc:
-                            await read_stream_writer.send(exc)
-                            continue
-                        session_message = SessionMessage(message)
-                        await read_stream_writer.send(session_message)
-            except anyio.ClosedResourceError:
-                await anyio.lowlevel.checkpoint()
+    class _PatchedUnownedTextWrapper(_OriginalUnownedTextWrapper):
+        """Text layer that never translates \n into \r\n on Windows."""
+        def __init__(self, buffer, *args, **kwargs):
+            kwargs.setdefault("newline", "\n")
+            super().__init__(buffer, *args, **kwargs)
 
-        async def stdout_writer():
-            try:
-                async with write_stream_reader:
-                    async for session_message in write_stream_reader:
-                        json = session_message.message.model_dump_json(by_alias=True, exclude_none=True)
-                        await stdout.write(json + "\n")
-                        await stdout.flush()
-            except anyio.ClosedResourceError:
-                await anyio.lowlevel.checkpoint()
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(stdin_reader)
-            tg.start_soon(stdout_writer)
-            yield read_stream, write_stream
-    
-    # Apply the monkey-patch
-    mcp_stdio.stdio_server = _patched_stdio_server
+    # stdio_server() looks this name up in module globals at call time,
+    # so replacing the module attribute is sufficient — no need to reimplement
+    # the transport (which in v2 also diverts fd 1 to stderr, protecting the
+    # JSON-RPC stream from stray prints).
+    mcp_stdio._UnownedTextWrapper = _PatchedUnownedTextWrapper
 
 # ============================================================================
 # STDOUT PROTECTION FOR MCP
@@ -95,17 +49,15 @@ import threading
 import traceback
 
 try:
-    from mcp.server.fastmcp import FastMCP
-    
-    # CRITICAL: Also patch the reference inside the fastmcp module
-    # FastMCP already imported stdio_server before our patch, so we need to update its reference too
-    if sys.platform == "win32":
-        import mcp.server.fastmcp.server as fastmcp_server
-        fastmcp_server.stdio_server = _patched_stdio_server
-        
-except ImportError as e:
-    print(f"[MCP CE] Import Error: {e}", file=sys.stderr, flush=True)
-    sys.exit(1)
+    # mcp 2.x: FastMCP was renamed to MCPServer (mcp.server.mcpserver)
+    from mcp.server.mcpserver import MCPServer
+except ImportError:
+    try:
+        # mcp 1.x fallback
+        from mcp.server.fastmcp import FastMCP as MCPServer
+    except ImportError as e:
+        print(f"[MCP CE] Import Error: {e}. Install with: pip install -r requirements.txt", file=sys.stderr, flush=True)
+        sys.exit(1)
 
 try:
     import win32file
@@ -452,7 +404,7 @@ ce_client = _create_bridge_client()
 # MCP SERVER - v12 IMPLEMENTATION
 # ============================================================================
 
-mcp = FastMCP(MCP_SERVER_NAME)
+mcp = MCPServer(MCP_SERVER_NAME)
 
 # --- PROCESS & MODULES ---
 
@@ -2340,7 +2292,7 @@ def get_opened_process_handle() -> str:
 
 if __name__ == "__main__":
     try:
-        debug_log("Starting FastMCP server (v12/v99 compatible)...")
+        debug_log("Starting MCPServer (v12/v99 compatible)...")
         mcp.run()
     except Exception as e:
         debug_log(f"Fatal Crash: {e}")
