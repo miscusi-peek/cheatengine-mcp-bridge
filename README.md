@@ -303,6 +303,12 @@ Check these in order:
 4. `pip install -r MCP_Server/requirements.txt` has installed both `mcp` and `pywin32`.
 5. Run the MCP `ping` tool. A successful connection returns `success: true` and the bridge version. `process_id: 0` is normal until Cheat Engine is attached to a target process.
 
+### `test_mcp.py` fails with `(231, 'CreateFile', ...)`
+
+Windows error 231 is `ERROR_PIPE_BUSY`: every instance of the Named Pipe is already in use.
+
+The bridge serves **one client at a time**, so this is the normal outcome when an MCP client is connected while you run the test suite — not a broken install. Stop or disconnect the MCP client, then run the suite again. Waiting will not help: the existing client holds the only instance, so a second one has nothing to connect to however long it waits.
+
 ---
 
 ## Environment Variables
@@ -355,23 +361,36 @@ AI_Context/
 
 ## Testing
 
-Running the test:
+`test_mcp.py` is an end-to-end script that drives the live bridge over the Named
+Pipe. It is not a unit-test harness: every case sends a real command, and several
+of them write to the target process.
+
+Preconditions:
+
+1. Cheat Engine is open with `ce_mcp_bridge.lua` loaded.
+2. A target process is attached. The write, breakpoint and allocation cases need
+   one; without it they fail or cascade-skip.
+3. **No MCP client is connected.** The bridge serves one client at a time, so a
+   running AI client holds the only pipe instance and the suite cannot open it.
+   Stop or disconnect the client first.
+
 ```bash
 python MCP_Server/test_mcp.py
 ```
 
-Expected output:
+The suite registers 67 cases (`all_tests` in `test_mcp.py`) and prints a
+per-category tally, then a summary in this shape:
+
 ```
-✅ Memory Reading: 6/6 tests passed
-✅ Process Info: 4/4 tests passed  
-✅ Code Analysis: 8/8 tests passed
-✅ Breakpoints: 4/4 tests passed
-✅ DBVM Functions: 3/3 tests passed
-✅ Utility Commands: 11/11 tests passed
-⏭️ Skipped: 1 test (generate_signature)
-────────────────────────────────────
-Total: 36/37 PASSED (100% success)
+======================================================================
+TOTAL: <passed> passed, <failed> failed, <skipped> skipped (of <total>)
+PASS RATE: <n>% (excluding skipped)
+======================================================================
 ```
+
+Exit status is non-zero when any case failed. The exact numbers depend on the
+target architecture and on whether DBVM is loaded, so there is no single expected
+transcript: the case list and the categories are defined in `test_mcp.py`.
 
 ---
 
