@@ -14,6 +14,7 @@ This test suite is designed to give 100% confidence in MCP bridge reliability.
 """
 
 import win32file
+import pywintypes
 import struct
 import json
 import time
@@ -45,6 +46,18 @@ class MCPTestClient:
             )
             print(f"✓ Connected to {PIPE_NAME}")
             return True
+        except pywintypes.error as e:
+            # 231 = ERROR_PIPE_BUSY. The bridge serves one client at a time, so
+            # this is the expected outcome when an MCP client already holds the
+            # pipe -- not a broken install, and not something waiting will fix.
+            if getattr(e, "winerror", None) == 231:
+                print(f"✗ Connection failed: {PIPE_NAME} is busy (Windows error 231).")
+                print("  The bridge serves one client at a time. An MCP client is")
+                print("  holding the only pipe instance. Stop or disconnect it, then")
+                print("  run this suite again.")
+                return False
+            print(f"✗ Connection failed: {e}")
+            return False
         except Exception as e:
             print(f"✗ Connection failed: {e}")
             return False
