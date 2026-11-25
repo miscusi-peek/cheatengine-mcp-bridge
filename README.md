@@ -84,6 +84,10 @@ flowchart TD
 
 ## Installation
 
+Option A — **[uv](https://docs.astral.sh/uv/)** (recommended, no manual install):
+dependencies are resolved automatically by `start_mcp.bat` on first run.
+
+Option B — pip:
 ```bash
 pip install -r MCP_Server/requirements.txt
 ```
@@ -111,6 +115,17 @@ dofile([[C:\path\to\cheatengine-mcp-bridge\MCP_Server\ce_mcp_bridge.lua]])
 
 Look for: `[MCP v12.0.0] MCP Server Listening on: CE_MCP_Bridge_v99`
 
+Alternatively, you can start the bridge from the CE menu:
+
+1. Copy `autorun/CE_MCP_Bridge_Loader.lua` into the `autorun` folder of your Cheat Engine installation.
+2. Edit the file and replace the placeholder path with the actual one:
+
+```lua
+local BRIDGE_SCRIPT = [[C:/path/to/cheatengine-mcp-bridge/MCP_Server/ce_mcp_bridge.lua]]
+```
+
+3. Restart Cheat Engine. A `Start CE MCP Bridge` entry then appears under the `Extra` menu; click it to load the bridge.
+
 ### 2. Configure MCP Client
 Add to your MCP configuration (e.g., `mcp_config.json`):
 ```json
@@ -134,6 +149,23 @@ args = ['C:\path\to\cheatengine-mcp-bridge\MCP_Server\mcp_cheatengine.py']
 ```
 
 Use single quotes for the Windows path so TOML treats backslashes literally.
+
+For [OpenCode](https://opencode.ai), add the server to `opencode.json` (uses the uv launcher, no pip install needed):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "cheatengine-mcp-bridge": {
+        "type": "local",
+        "command": [
+          "C:/path/to/cheatengine-mcp-bridge/start_mcp.bat"
+        ]
+      }
+    }
+  }
+}
+```
 
 #### TCP relay transport
 

@@ -402,6 +402,101 @@ def main():
     for test in ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit"]:
         all_tests[test].run(client)
 
+    # =========================================================================
+    # CATEGORY 1B: Unicode / CJK / Emoji Round-Trip
+    # Exercises the pure-Lua JSON codec: \uXXXX decode (utf8_char + UTF-16
+    # surrogate pairs) and raw-UTF-8 encode, in both directions.
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("CATEGORY 1B: Unicode / CJK / Emoji Round-Trip")
+    print("=" * 70)
+
+    # Decode only: request params carry CJK (json.dumps -> \uXXXX escapes),
+    # response is plain ASCII. UTF-8 "測試" = 6 bytes.
+    all_tests["unicode_decode_cjk"] = TestCase(
+        "Unicode decode (CJK byte length)", "evaluate_lua",
+        params={"code": 'return #"測試"'},
+        validators=[
+            field_equals("success", True),
+            field_equals("result", "6"),
+        ]
+    )
+
+    # Encode only: ASCII request; Lua builds CJK bytes, response carries UTF-8.
+    all_tests["unicode_encode_cjk"] = TestCase(
+        "Unicode encode (string.char -> CJK)", "evaluate_lua",
+        params={"code": "return string.char(233, 137, 145)"},  # E9 89 91 -> 金
+        validators=[
+            field_equals("success", True),
+            field_equals("result", "金"),
+        ]
+    )
+
+    # Full round-trip: CJK text through decode AND encode.
+    all_tests["unicode_roundtrip_text"] = TestCase(
+        "Unicode round-trip (CJK text)", "evaluate_lua",
+        params={"code": 'return "測試文字"'},
+        validators=[
+            field_equals("success", True),
+            field_equals("result", "測試文字"),
+        ]
+    )
+
+    # Emoji are non-BMP: Python escapes them as UTF-16 surrogate pairs
+    # (e.g. \ud83d\udcb0), exercising the surrogate-pair decode path.
+    all_tests["unicode_roundtrip_emoji"] = TestCase(
+        "Unicode round-trip (emoji surrogate pair)", "evaluate_lua",
+        params={"code": 'return "💰🎉"'},
+        validators=[
+            field_equals("success", True),
+            field_equals("result", "💰🎉"),
+        ]
+    )
+
+    # Multi-script round-trip: Korean, kana, JP-kanji, simplified + traditional
+    # Chinese, symbols — all BMP codepoints through \uXXXX decode + UTF-8 encode.
+    _uni_multi = "한국어 こんにちは カタカナ 日本語 简体 繁體 ★♥"
+    all_tests["unicode_roundtrip_multiscript"] = TestCase(
+        "Unicode round-trip (multi-script CJK)", "evaluate_lua",
+        params={"code": f'return "{_uni_multi}"'},
+        validators=[
+            field_equals("success", True),
+            field_equals("result", _uni_multi),
+        ]
+    )
+
+    # Memory-record description round-trip — the original failing scenario.
+    _uni_desc = "金錢💰 9999999 (7E10EC)"
+    all_tests["unicode_record_create"] = TestCase(
+        "create_memory_record (CJK+emoji description)", "create_memory_record",
+        params={"description": _uni_desc, "address": "0x140000000", "type": "dword"},
+        validators=[
+            field_equals("success", True),
+            has_field("id", int),
+            lambda r: (r.get("record", {}).get("description") == _uni_desc,
+                       f"description={r.get('record', {}).get('description')!r}"),
+        ]
+    )
+
+    for test in ["unicode_decode_cjk", "unicode_encode_cjk", "unicode_roundtrip_text",
+                 "unicode_roundtrip_emoji", "unicode_roundtrip_multiscript", "unicode_record_create"]:
+        all_tests[test].run(client)
+
+    # Read the record back by its CJK description (decode path again), then clean up.
+    _uni_rec_id = (all_tests["unicode_record_create"].response or {}).get("id")
+    if _uni_rec_id is not None:
+        all_tests["unicode_record_get"] = TestCase(
+            "get_memory_record (by CJK description)", "get_memory_record",
+            params={"description": _uni_desc},
+            validators=[
+                field_equals("success", True),
+                lambda r: (r.get("record", {}).get("description") == _uni_desc,
+                           f"description={r.get('record', {}).get('description')!r}"),
+            ]
+        )
+        all_tests["unicode_record_get"].run(client)
+        client.send_command("delete_memory_record", {"id": _uni_rec_id})
+
     # UNIT-24: analyze_pointer_access is pure (no attached process required).
     all_tests["analyze_pointer_access"] = TestCase(
         "analyze_pointer_access (pure)", "analyze_pointer_access",
@@ -1701,6 +1796,9 @@ def main():
     
     categories = {
         "Basic & Utility": ["ping", "get_process_info", "evaluate_lua_simple", "evaluate_lua_complex", "evaluate_lua_targetIs64Bit"],
+        "Unicode / CJK / Emoji": ["unicode_decode_cjk", "unicode_encode_cjk", "unicode_roundtrip_text",
+                                  "unicode_roundtrip_emoji", "unicode_roundtrip_multiscript",
+                                  "unicode_record_create", "unicode_record_get"],
         "Scanning": ["scan_all", "get_scan_results", "aob_scan", "search_string"],
         "Memory Reading": ["read_memory", "read_integer_byte", "read_integer_word", "read_integer_dword", "read_string"],
         "Disassembly": ["disassemble", "get_instruction_info", "find_function_boundaries", "analyze_function"],

@@ -452,7 +452,16 @@ local function decode_string(str, pos)
   end
   local s = str:sub(startpos, endpos - 1)
   s = s:gsub("\\.", function(c) return escape_char_map_inv[c:sub(2)] or c end)
-  s = s:gsub("\\u(%x%x%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
+  -- Lua 5.3 native utf8 library: \uXXXX -> codepoint -> UTF-8 bytes.
+  -- UTF-16 surrogate pairs (emoji, non-BMP) are combined first.
+  s = s:gsub("\\u(%x%x%x%x)\\u(%x%x%x%x)", function(hi, lo)
+    local h, l = tonumber(hi, 16), tonumber(lo, 16)
+    if h >= 0xD800 and h <= 0xDBFF and l >= 0xDC00 and l <= 0xDFFF then
+      return utf8.char(0x10000 + (h - 0xD800) * 0x400 + (l - 0xDC00))
+    end
+    return utf8.char(h) .. utf8.char(l)
+  end)
+  s = s:gsub("\\u(%x%x%x%x)", function(hex) return utf8.char(tonumber(hex, 16)) end)
   return s, endpos + 1
 end
 local function decode_number(str, pos)
